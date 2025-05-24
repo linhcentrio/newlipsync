@@ -436,4 +436,99 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                 }
             
             # Verify downloaded files
-            if not os.path.exists(video_path) or os.path.getsize(video_path
+            if not os.path.exists(video_path) or os.path.getsize(video_path) == 0:
+                return {
+                    "error": "Downloaded video file is empty or corrupted",
+                    "status": "failed"
+                }
+            
+            if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
+                return {
+                    "error": "Downloaded audio file is empty or corrupted", 
+                    "status": "failed"
+                }
+            
+            # Process lip sync
+            output_path = proc.process_lipsync(
+                video_path=video_path,
+                audio_path=audio_path,
+                job_id=job_id,
+                inference_steps=inference_steps,
+                guidance_scale=guidance_scale,
+                seed=seed
+            )
+            
+            runpod.serverless.progress_update(job_id, "Uploading result to storage...")
+            
+            # Upload to MinIO
+            output_filename = f"lipsync_{job_id}_{uuid.uuid4().hex[:8]}.mp4"
+            output_url = proc.minio.upload_file(output_path, output_filename)
+            
+            # Calculate processing time
+            processing_time = time.time() - start_time
+            
+            # Clean up temporary output file
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            
+            # Clean up memory
+            proc.cleanup_memory()
+            
+            runpod.serverless.progress_update(job_id, "Processing completed successfully!")
+            
+            # Return success response
+            return {
+                "output_video_url": output_url,
+                "processing_info": {
+                    "inference_steps": inference_steps,
+                    "guidance_scale": guidance_scale,
+                    "seed": torch.initial_seed() if seed == -1 else seed,
+                    "processing_time_seconds": round(processing_time, 2),
+                    "device": proc.device,
+                    "dtype": str(proc.dtype)
+                },
+                "status": "completed"
+            }
+    
+    except torch.cuda.OutOfMemoryError as e:
+        logger.error(f"GPU out of memory: {e}")
+        if 'proc' in locals():
+            proc.cleanup_memory()
+        return {
+            "error": "GPU out of memory. Try reducing video resolution or length.",
+            "status": "failed",
+            "error_type": "gpu_memory"
+        }
+    
+    except FileNotFoundError as e:
+        logger.error(f"Required file not found: {e}")
+        return {
+            "error": f"Required model file not found: {str(e)}",
+            "status": "failed", 
+            "error_type": "missing_file"
+        }
+    
+    except Exception as e:
+        logger.error(f"Unexpected error in job {job_id}: {e}", exc_info=True)
+        if 'proc' in locals():
+            proc.cleanup_memory()
+        return {
+            "error": f"Internal processing error: {str(e)}",
+            "status": "failed",
+            "error_type": "internal_error"
+        }
+
+# ==================== MAIN ENTRY POINT ====================
+
+if __name__ == "__main__":
+    logger.info("Starting LatentSync RunPod Serverless Worker...")
+    logger.info(f"CUDA Available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        logger.info(f"GPU: {torch.cuda.get_device_name()}")
+        logger.info(f"CUDA Version: {torch.version.cuda}")
+    
+    # Start RunPod serverless
+    runpod.serverless.start({
+        "handler": handler,
+        "return_aggregate_stream": False,  # We don't need streaming for this use case
+    })
