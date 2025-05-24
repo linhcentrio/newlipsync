@@ -1,5 +1,5 @@
 # Multi-stage build để giảm image size
-FROM pytorch/pytorch:2.5.1-cuda12.1-cudnn9-runtime as base
+FROM pytorch/pytorch:2.5.1-cuda12.1-cudnn9-runtime AS base
 
 WORKDIR /app
 
@@ -16,28 +16,42 @@ RUN apt-get update && apt-get install -y \
 # Copy requirements trước để tận dụng Docker cache
 COPY requirements.txt /app/
 
-# Cài PyTorch riêng biệt với cache mount và index-url chính xác
+# Cài PyTorch riêng biệt với cache mount
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install torch==2.5.1 torchvision==0.20.1 \
     --index-url https://download.pytorch.org/whl/cu121
 
-# Cài các dependencies khác (loại trừ PyTorch đã cài)
+# Cài các dependencies khác
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --no-cache-dir \
-    $(grep -v "torch" requirements.txt | grep -v "^--extra-index-url")
+    diffusers==0.32.2 \
+    transformers==4.48.0 \
+    decord==0.6.0 \
+    accelerate==0.26.1 \
+    einops==0.7.0 \
+    omegaconf==2.3.0 \
+    opencv-python==4.9.0.80 \
+    mediapipe==0.10.11 \
+    python_speech_features==0.6 \
+    librosa==0.10.1 \
+    scenedetect==0.6.1 \
+    ffmpeg-python==0.2.0 \
+    imageio==2.31.1 \
+    imageio-ffmpeg==0.5.1 \
+    lpips==0.1.4 \
+    face-alignment==1.4.1 \
+    gradio==5.24.0 \
+    huggingface-hub==0.30.2 \
+    numpy==1.26.4 \
+    kornia==0.8.0 \
+    insightface==0.7.3 \
+    onnxruntime-gpu==1.21.0 \
+    runpod>=1.6.0 \
+    minio>=7.0.0
 
-# Cài RunPod và MinIO
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install runpod>=1.6.0 minio>=7.0.0
-
-# Download models trong build stage
-RUN python -c "
-from huggingface_hub import hf_hub_download
-import os
-os.makedirs('checkpoints/whisper', exist_ok=True)
-hf_hub_download(repo_id='ByteDance/LatentSync-1.5', filename='whisper/tiny.pt', local_dir='checkpoints')
-hf_hub_download(repo_id='ByteDance/LatentSync-1.5', filename='latentsync_unet.pt', local_dir='checkpoints')
-"
+# Download models - FIX: Sử dụng separate script
+COPY download_models.py /app/
+RUN python download_models.py
 
 # Copy source code cuối cùng
 COPY . /app/
