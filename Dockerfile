@@ -21,7 +21,14 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install torch==2.5.1 torchvision==0.20.1 \
     --index-url https://download.pytorch.org/whl/cu121
 
-# Cài các dependencies khác
+# Download và cài InsightFace prebuilt wheel
+RUN wget https://huggingface.co/deauxpas/colabrepo/resolve/main/insightface-0.7.3-cp310-cp310-linux_x86_64.whl \
+    -O /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl
+
+# Cài các dependencies khác (loại trừ insightface)
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --no-cache-dir \
     diffusers==0.32.2 \
@@ -44,12 +51,14 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     huggingface-hub==0.30.2 \
     numpy==1.26.4 \
     kornia==0.8.0 \
-    insightface==0.7.3 \
     onnxruntime-gpu==1.21.0 \
     runpod>=1.6.0 \
     minio>=7.0.0
 
-# Download models - FIX: Sử dụng separate script
+# Clean up wheel file
+RUN rm /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl
+
+# Download models - Sử dụng separate script
 COPY download_models.py /app/
 RUN python download_models.py
 
