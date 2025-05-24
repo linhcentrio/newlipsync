@@ -1,6 +1,8 @@
-torch==2.5.1
-torchvision==0.20.1
---extra-index-url https://download.pytorch.org/whl/cu121
+# Loại bỏ PyTorch khỏi requirements.txt vì đã cài trong Dockerfile
+# torch==2.5.1
+# torchvision==0.20.1
+# --extra-index-url https://download.pytorch.org/whl/cu121
+
 diffusers==0.32.2
 transformers==4.48.0
 decord==0.6.0
