@@ -1,5 +1,5 @@
 # RECOMMENDED: Sử dụng xiongsp fork thay vì cnstark
-FROM spxiong/pytorch:2.4.1-py3.10.15-cuda12.1.0-ubuntu22.04 AS base
+FROM spxiong/pytorch:2.5.1-py3.10.15-cuda12.1.0-devel-ubuntu22.04 AS base
 
 WORKDIR /app
 
