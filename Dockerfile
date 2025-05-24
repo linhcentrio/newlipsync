@@ -1,5 +1,5 @@
-# RECOMMENDED: Sử dụng cnstark image cho compatibility tốt
-FROM cnstark/pytorch:2.4.1-py3.10.15-cuda12.1.0-ubuntu22.04 AS base
+# RECOMMENDED: Sử dụng xiongsp fork thay vì cnstark
+FROM spxiong/pytorch:2.4.1-py3.10.15-cuda12.1.0-ubuntu22.04 AS base
 
 WORKDIR /app
 
@@ -16,17 +16,16 @@ RUN apt-get update && apt-get install -y \
 
 # Verify environment
 RUN python --version && \
-    python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA: {torch.version.cuda}')" && \
-    cat /etc/os-release
+    python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA: {torch.version.cuda}')"
 
 # Copy requirements
 COPY requirements.txt /app/
 
-# Upgrade pip
+# Install dependencies
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip setuptools wheel
 
-# Install dependencies (PyTorch đã có sẵn)
+# Install packages
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --no-cache-dir \
     diffusers==0.32.2 \
@@ -53,17 +52,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     runpod>=1.6.0 \
     minio>=7.0.0
 
-# Download InsightFace wheel (compatible with Python 3.10)
+# Install InsightFace
 RUN wget https://huggingface.co/deauxpas/colabrepo/resolve/main/insightface-0.7.3-cp310-cp310-linux_x86_64.whl \
-    -O /tmp/insightface.whl
-
-# Install InsightFace với force
-RUN --mount=type=cache,target=/root/.cache/pip \
+    -O /tmp/insightface.whl && \
     pip install /tmp/insightface.whl --force-reinstall --no-deps && \
     rm /tmp/insightface.whl
-
-# Verify InsightFace
-RUN python -c "import insightface; print(f'InsightFace: {insightface.__version__}')"
 
 # Download models
 COPY download_models.py /app/
@@ -71,10 +64,7 @@ RUN python download_models.py
 
 # Copy source code
 COPY . /app/
-
-# Create directories
 RUN mkdir -p /app/temp /app/output
 
 ENV PYTHONPATH="/app:${PYTHONPATH}"
-
 CMD ["python", "rp_handler.py"]
