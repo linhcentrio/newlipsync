@@ -8,7 +8,7 @@ RUN python --version && \
     python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA Available: {torch.cuda.is_available()}'); print(f'CUDA Version: {torch.version.cuda}')" && \
     cat /etc/os-release
 
-# Install system dependencies (devel image đã có build tools)
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     libgl1-mesa-glx \
@@ -29,7 +29,7 @@ COPY requirements.txt /app/
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip setuptools wheel
 
-# Install dependencies (PyTorch 2.5.1 đã có sẵn, không cần cài lại)
+# Install dependencies
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --no-cache-dir \
     diffusers==0.32.2 \
@@ -56,7 +56,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     runpod>=1.6.0 \
     minio>=7.0.0
 
-# Download InsightFace wheel với proper filename
+# Download InsightFace wheel
 RUN echo "=== Downloading InsightFace wheel ===" && \
     wget --no-check-certificate --timeout=30 --tries=3 \
     "https://huggingface.co/deauxpas/colabrepo/resolve/main/insightface-0.7.3-cp310-cp310-linux_x86_64.whl" \
@@ -75,36 +75,22 @@ RUN echo "=== Installing InsightFace ===" && \
 # Clean up wheel file
 RUN rm -f /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl
 
-# Verify InsightFace installation
-RUN python -c "
-try:
-    import insightface
-    print(f'✅ InsightFace: {insightface.__version__}')
-    app = insightface.app.FaceAnalysis()
-    print('✅ InsightFace app creation successful')
-except ImportError as e:
-    print(f'❌ InsightFace import failed: {e}')
-except Exception as e:
-    print(f'⚠️ InsightFace app creation failed: {e}')
-"
+# FIXED: Verify InsightFace installation với single-line command
+RUN python -c "import insightface; print(f'✅ InsightFace: {insightface.__version__}')" && \
+    echo "✅ InsightFace basic import successful"
 
-# Copy model download script
+# Copy verification scripts
+COPY verify_insightface.py /tmp/
 COPY download_models.py /app/
+
+# Run full verification
+RUN python /tmp/verify_insightface.py && rm /tmp/verify_insightface.py
+
+# Download models
 RUN python download_models.py
 
-# Verify all core dependencies
-RUN python -c "
-import torch, cv2, numpy, transformers, diffusers
-print('=== Dependency Verification ===')
-print(f'✅ PyTorch: {torch.__version__}')
-print(f'✅ OpenCV: {cv2.__version__}')
-print(f'✅ NumPy: {numpy.__version__}')
-print(f'✅ Transformers: {transformers.__version__}')
-print(f'✅ Diffusers: {diffusers.__version__}')
-print(f'✅ CUDA Available: {torch.cuda.is_available()}')
-if torch.cuda.is_available():
-    print(f'✅ GPU Count: {torch.cuda.device_count()}')
-"
+# Verify all core dependencies với single-line
+RUN python -c "import torch, cv2, numpy as np, transformers, diffusers; print('=== Dependencies OK ==='); print(f'PyTorch: {torch.__version__}'); print(f'CUDA: {torch.cuda.is_available()}'); print('All core dependencies verified')"
 
 # Copy source code
 COPY . /app/
@@ -112,8 +98,8 @@ COPY . /app/
 # Create working directories
 RUN mkdir -p /app/temp /app/output /app/checkpoints
 
-# Set environment variables
-ENV PYTHONPATH="/app:${PYTHONPATH}"
+# Set environment variables (FIXED)
+ENV PYTHONPATH="/app"
 ENV TORCH_HOME="/app/checkpoints"
 ENV HF_HOME="/app/checkpoints"
 
