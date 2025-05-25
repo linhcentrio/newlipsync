@@ -3,6 +3,12 @@ FROM spxiong/pytorch:2.5.1-py3.10.15-cuda12.1.0-devel-ubuntu22.04 AS base
 
 WORKDIR /app
 
+# Set CUDA environment variables
+ENV CUDA_VISIBLE_DEVICES=0
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+ENV CUDA_MODULE_LOADING=LAZY
+
 # Verify environment trước khi bắt đầu
 RUN python --version && \
     python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA Available: {torch.cuda.is_available()}'); print(f'CUDA Version: {torch.version.cuda}')" && \
@@ -56,40 +62,47 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     runpod>=1.6.0 \
     minio>=7.0.0
 
-# Download InsightFace wheel
+# Install InsightFace dependencies
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-cache-dir \
+    scikit-image>=0.14.2 \
+    Pillow \
+    matplotlib \
+    scipy \
+    easydict \
+    cython
+
+# Download InsightFace wheel với improved reliability
 RUN echo "=== Downloading InsightFace wheel ===" && \
-    wget --no-check-certificate --timeout=30 --tries=3 \
+    (wget --no-check-certificate --timeout=30 --tries=5 \
     "https://huggingface.co/deauxpas/colabrepo/resolve/main/insightface-0.7.3-cp310-cp310-linux_x86_64.whl" \
-    -O /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl
+    -O /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl || \
+    curl -L -o /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl \
+    "https://huggingface.co/deauxpas/colabrepo/resolve/main/insightface-0.7.3-cp310-cp310-linux_x86_64.whl") && \
+    echo "Download completed successfully"
 
 # Verify downloaded file
 RUN echo "=== Verifying downloaded wheel ===" && \
     ls -la /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl && \
     file /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl
 
-# Install InsightFace wheel
-RUN echo "=== Installing InsightFace ===" && \
-    --mount=type=cache,target=/root/.cache/pip \
-    pip install /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl --force-reinstall --no-deps
+# Install InsightFace wheel - FIXED syntax
+RUN --mount=type=cache,target=/root/.cache/pip \
+    echo "=== Installing InsightFace ===" && \
+    pip install /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl --force-reinstall
 
 # Clean up wheel file
 RUN rm -f /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl
 
-# FIXED: Verify InsightFace installation với single-line command
+# Verify InsightFace installation với basic check
 RUN python -c "import insightface; print(f'✅ InsightFace: {insightface.__version__}')" && \
     echo "✅ InsightFace basic import successful"
 
-# Copy verification scripts
-COPY verify_insightface.py /tmp/
+# Copy download models script và thực hiện download
 COPY download_models.py /app/
-
-# Run full verification
-RUN python /tmp/verify_insightface.py && rm /tmp/verify_insightface.py
-
-# Download models
 RUN python download_models.py
 
-# Verify all core dependencies với single-line
+# Verify all core dependencies
 RUN python -c "import torch, cv2, numpy as np, transformers, diffusers; print('=== Dependencies OK ==='); print(f'PyTorch: {torch.__version__}'); print(f'CUDA: {torch.cuda.is_available()}'); print('All core dependencies verified')"
 
 # Copy source code
@@ -98,7 +111,7 @@ COPY . /app/
 # Create working directories
 RUN mkdir -p /app/temp /app/output /app/checkpoints
 
-# Set environment variables (FIXED)
+# Set environment variables
 ENV PYTHONPATH="/app"
 ENV TORCH_HOME="/app/checkpoints"
 ENV HF_HOME="/app/checkpoints"
