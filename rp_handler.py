@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 RunPod Serverless Handler for LatentSync AI
-Optimized for production deployment with comprehensive error handling,
-progress updates, and MinIO integration.
+FIXED: progress_update với job object thay vì job_id string
 """
 
 import runpod
@@ -80,9 +79,8 @@ def validate_url(url: str) -> bool:
 def clean_filename(filename: str) -> str:
     """Clean filename for safe storage"""
     import re
-    # Remove or replace unsafe characters
     filename = re.sub(r'[^\w\-_\.]', '_', filename)
-    return filename[:100]  # Limit length
+    return filename[:100]
 
 def get_file_extension(url: str) -> str:
     """Extract file extension from URL"""
@@ -122,7 +120,6 @@ class MinIOManager:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                # Upload with metadata
                 self.client.fput_object(
                     self.bucket, 
                     object_name, 
@@ -130,7 +127,6 @@ class MinIOManager:
                     content_type=content_type
                 )
                 
-                # Generate direct URL
                 file_name_encoded = quote(object_name)
                 protocol = "https" if MINIO_CONFIG["secure"] else "http"
                 file_url = f"{protocol}://{MINIO_CONFIG['endpoint']}/{self.bucket}/{file_name_encoded}"
@@ -142,7 +138,7 @@ class MinIOManager:
                 logger.error(f"MinIO upload attempt {attempt + 1} failed: {e}")
                 if attempt == max_retries - 1:
                     raise e
-                time.sleep(2 ** attempt)  # Exponential backoff
+                time.sleep(2 ** attempt)
 
 # ==================== LATENTSYNC PROCESSOR ====================
 
@@ -165,24 +161,24 @@ class LatentSyncProcessor:
         """Determine optimal dtype based on GPU capability"""
         if torch.cuda.is_available():
             capability = torch.cuda.get_device_capability()
-            if capability[0] >= 8:  # Ampere and newer
+            if capability[0] >= 8:
                 return torch.float16
-            elif capability[0] >= 7:  # Volta and newer  
+            elif capability[0] >= 7:
                 return torch.float16
         return torch.float32
     
-    def _load_models(self, job_id: str):
-        """Load models with progress updates"""
+    def _load_models(self, job: Dict[str, Any]):
+        """Load models with progress updates - FIXED: Pass job object"""
         if self.models_loaded:
             return
             
         try:
-            runpod.serverless.progress_update(job_id, "Loading configuration...")
+            runpod.serverless.progress_update(job, "Loading configuration...")
             
             # Load config
             self.config = OmegaConf.load(MODEL_CONFIG["config_path"])
             
-            runpod.serverless.progress_update(job_id, "Loading VAE...")
+            runpod.serverless.progress_update(job, "Loading VAE...")
             
             # Load VAE
             vae = AutoencoderKL.from_pretrained(
@@ -192,7 +188,7 @@ class LatentSyncProcessor:
             vae.config.scaling_factor = 0.18215
             vae.config.shift_factor = 0
             
-            runpod.serverless.progress_update(job_id, "Loading audio encoder...")
+            runpod.serverless.progress_update(job, "Loading audio encoder...")
             
             # Load Audio Encoder
             if self.config.model.cross_attention_dim == 768:
@@ -209,7 +205,7 @@ class LatentSyncProcessor:
                 audio_feat_length=self.config.data.audio_feat_length,
             )
             
-            runpod.serverless.progress_update(job_id, "Loading UNet...")
+            runpod.serverless.progress_update(job, "Loading UNet...")
             
             # Load UNet
             denoising_unet, _ = UNet3DConditionModel.from_pretrained(
@@ -219,12 +215,12 @@ class LatentSyncProcessor:
             )
             denoising_unet = denoising_unet.to(dtype=self.dtype)
             
-            runpod.serverless.progress_update(job_id, "Loading scheduler...")
+            runpod.serverless.progress_update(job, "Loading scheduler...")
             
             # Load Scheduler
             scheduler = DDIMScheduler.from_pretrained("configs")
             
-            runpod.serverless.progress_update(job_id, "Assembling pipeline...")
+            runpod.serverless.progress_update(job, "Assembling pipeline...")
             
             # Create Pipeline
             self.pipeline = LipsyncPipeline(
@@ -241,11 +237,11 @@ class LatentSyncProcessor:
             logger.error(f"Failed to load models: {e}")
             raise e
     
-    def download_file(self, url: str, local_path: str, job_id: str, 
+    def download_file(self, url: str, local_path: str, job: Dict[str, Any], 
                      file_type: str = "file") -> bool:
-        """Download file with progress updates"""
+        """Download file with progress updates - FIXED: Pass job object"""
         try:
-            runpod.serverless.progress_update(job_id, f"Downloading {file_type}...")
+            runpod.serverless.progress_update(job, f"Downloading {file_type}...")
             
             response = requests.get(url, stream=True, timeout=60)
             response.raise_for_status()
@@ -262,9 +258,9 @@ class LatentSyncProcessor:
                         # Update progress every 10%
                         if total_size > 0:
                             progress = (downloaded / total_size) * 100
-                            if progress % 10 < 1:  # Approximate 10% intervals
+                            if progress % 10 < 1:
                                 runpod.serverless.progress_update(
-                                    job_id, 
+                                    job, 
                                     f"Downloading {file_type}: {progress:.0f}%"
                                 )
             
@@ -275,17 +271,17 @@ class LatentSyncProcessor:
             logger.error(f"Failed to download {file_type} from {url}: {e}")
             return False
     
-    def process_lipsync(self, video_path: str, audio_path: str, job_id: str,
+    def process_lipsync(self, video_path: str, audio_path: str, job: Dict[str, Any],
                        inference_steps: int = 20, guidance_scale: float = 2.0,
                        seed: int = -1) -> str:
-        """Process lip sync with progress updates"""
+        """Process lip sync with progress updates - FIXED: Pass job object"""
         
         # Generate output filename
         output_filename = f"lipsync_{uuid.uuid4().hex}.mp4"
         temp_output = f"/tmp/{output_filename}"
         
         try:
-            runpod.serverless.progress_update(job_id, "Starting lip sync processing...")
+            runpod.serverless.progress_update(job, "Starting lip sync processing...")
             
             # Set seed
             if seed != -1:
@@ -311,7 +307,7 @@ class LatentSyncProcessor:
                 mask_image_path=self.config.data.mask_image_path,
             )
             
-            runpod.serverless.progress_update(job_id, "Lip sync processing completed!")
+            runpod.serverless.progress_update(job, "Lip sync processing completed!")
             
             if not os.path.exists(temp_output):
                 raise RuntimeError("Output video was not generated")
@@ -343,26 +339,10 @@ def get_processor() -> LatentSyncProcessor:
 
 def handler(job: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Main RunPod serverless handler
-    
-    Expected input:
-    {
-        "video_url": "https://example.com/video.mp4",
-        "audio_url": "https://example.com/audio.wav",
-        "inference_steps": 20,      # Optional
-        "guidance_scale": 2.0,      # Optional  
-        "seed": 1247               # Optional
-    }
-    
-    Returns:
-    {
-        "output_video_url": "https://minio-url/output.mp4",
-        "processing_info": {...},
-        "status": "completed"
-    }
+    Main RunPod serverless handler - FIXED: Progress updates với job object
     """
     
-    job_id = job.get("id", "unknown")
+    job_id = job.get("id", "unknown")  # Chỉ dùng để logging
     start_time = time.time()
     
     try:
@@ -405,11 +385,12 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         
         logger.info(f"Processing job {job_id}: video={video_url}, audio={audio_url}")
         
-        runpod.serverless.progress_update(job_id, "Initializing processor...")
+        # FIXED: Pass job object instead of job_id
+        runpod.serverless.progress_update(job, "Initializing processor...")
         
         # Get processor and load models
         proc = get_processor()
-        proc._load_models(job_id)
+        proc._load_models(job)  # Pass job object
         
         # Create temporary directory for this job
         with tempfile.TemporaryDirectory(prefix=f"lipsync_{job_id}_") as temp_dir:
@@ -421,15 +402,15 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             video_path = os.path.join(temp_dir, f"input_video{video_ext}")
             audio_path = os.path.join(temp_dir, f"input_audio{audio_ext}")
             
-            # Download video
-            if not proc.download_file(video_url, video_path, job_id, "video"):
+            # Download video - Pass job object
+            if not proc.download_file(video_url, video_path, job, "video"):
                 return {
                     "error": f"Failed to download video from: {video_url}",
                     "status": "failed"
                 }
             
-            # Download audio  
-            if not proc.download_file(audio_url, audio_path, job_id, "audio"):
+            # Download audio - Pass job object
+            if not proc.download_file(audio_url, audio_path, job, "audio"):
                 return {
                     "error": f"Failed to download audio from: {audio_url}",
                     "status": "failed"
@@ -448,17 +429,17 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                     "status": "failed"
                 }
             
-            # Process lip sync
+            # Process lip sync - Pass job object
             output_path = proc.process_lipsync(
                 video_path=video_path,
                 audio_path=audio_path,
-                job_id=job_id,
+                job=job,  # Pass job object
                 inference_steps=inference_steps,
                 guidance_scale=guidance_scale,
                 seed=seed
             )
             
-            runpod.serverless.progress_update(job_id, "Uploading result to storage...")
+            runpod.serverless.progress_update(job, "Uploading result to storage...")
             
             # Upload to MinIO
             output_filename = f"lipsync_{job_id}_{uuid.uuid4().hex[:8]}.mp4"
@@ -474,7 +455,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             # Clean up memory
             proc.cleanup_memory()
             
-            runpod.serverless.progress_update(job_id, "Processing completed successfully!")
+            runpod.serverless.progress_update(job, "Processing completed successfully!")
             
             # Return success response
             return {
@@ -530,5 +511,5 @@ if __name__ == "__main__":
     # Start RunPod serverless
     runpod.serverless.start({
         "handler": handler,
-        "return_aggregate_stream": False,  # We don't need streaming for this use case
+        "return_aggregate_stream": False,
     })
