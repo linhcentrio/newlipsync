@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-RunPod Serverless Handler for LatentSync AI
-FIXED: progress_update với job object thay vì job_id string
+RunPod Serverless Handler for LatentSync AI - Simplified Version
+Sử dụng subprocess để gọi inference script và MinIO để upload
 """
 
 import runpod
@@ -9,507 +9,203 @@ import os
 import tempfile
 import uuid
 import requests
-import json
+import subprocess
 import time
-import gc
 from pathlib import Path
-from typing import Dict, Any, Optional
-from urllib.parse import quote, urlparse
-
-import torch
-from omegaconf import OmegaConf
-from diffusers import AutoencoderKL, DDIMScheduler
-from accelerate.utils import set_seed
 from minio import Minio
-from minio.error import S3Error
-
-# Import LatentSync modules
-from latentsync.models.unet import UNet3DConditionModel
-from latentsync.pipelines.lipsync_pipeline import LipsyncPipeline
-from latentsync.whisper.audio2feature import Audio2Feature
-
+from urllib.parse import quote
 import logging
 
-# Cấu hình logging chi tiết
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Cấu hình logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ==================== CONFIGURATION ====================
-
 # MinIO Configuration
-MINIO_CONFIG = {
-    "endpoint": "108.181.198.160:9000",
-    "access_key": "minioadmin",
-    "secret_key": "aiclip-dfl", 
-    "bucket": "aiclipdfl",
-    "secure": False
-}
+MINIO_ENDPOINT = "108.181.198.160:9000"
+MINIO_ACCESS_KEY = "minioadmin"
+MINIO_SECRET_KEY = "aiclip-dfl"
+MINIO_BUCKET = "aiclipdfl"
+MINIO_SECURE = False
 
-# Model Configuration
-MODEL_CONFIG = {
-    "config_path": "configs/unet/stage2.yaml",
-    "unet_checkpoint": "checkpoints/latentsync_unet.pt",
-    "whisper_tiny": "checkpoints/whisper/tiny.pt",
-    "whisper_small": "checkpoints/whisper/small.pt",
-    "vae_model": "stabilityai/sd-vae-ft-mse"
-}
+# Initialize MinIO client
+minio_client = Minio(
+    MINIO_ENDPOINT,
+    access_key=MINIO_ACCESS_KEY,
+    secret_key=MINIO_SECRET_KEY,
+    secure=MINIO_SECURE
+)
 
-# Processing Configuration
-DEFAULT_PARAMS = {
-    "inference_steps": 20,
-    "guidance_scale": 2.0,
-    "num_frames": 16,
-    "resolution": 512,
-    "seed": -1
-}
-
-# ==================== UTILITY FUNCTIONS ====================
-
-def validate_url(url: str) -> bool:
-    """Validate URL format"""
+def download_file(url: str, local_path: str) -> bool:
+    """Download file từ URL"""
     try:
-        result = urlparse(url)
-        return all([result.scheme, result.netloc])
-    except:
+        logger.info(f"Downloading {url}")
+        response = requests.get(url, stream=True, timeout=60)
+        response.raise_for_status()
+        
+        with open(local_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+        
+        logger.info(f"Downloaded: {local_path}")
+        return True
+    except Exception as e:
+        logger.error(f"Download failed: {e}")
         return False
 
-def clean_filename(filename: str) -> str:
-    """Clean filename for safe storage"""
-    import re
-    filename = re.sub(r'[^\w\-_\.]', '_', filename)
-    return filename[:100]
+def upload_to_minio(local_path: str, object_name: str) -> str:
+    """Upload file lên MinIO và trả về URL"""
+    try:
+        # Upload file
+        minio_client.fput_object(MINIO_BUCKET, object_name, local_path)
+        
+        # Generate URL
+        file_url = f"http://{MINIO_ENDPOINT}/{MINIO_BUCKET}/{quote(object_name)}"
+        logger.info(f"Uploaded: {file_url}")
+        return file_url
+    except Exception as e:
+        logger.error(f"Upload failed: {e}")
+        raise e
 
-def get_file_extension(url: str) -> str:
-    """Extract file extension from URL"""
-    path = urlparse(url).path
-    return os.path.splitext(path)[1].lower()
-
-# ==================== MINIO CLIENT ====================
-
-class MinIOManager:
-    """Enhanced MinIO client with error handling and retry logic"""
-    
-    def __init__(self):
-        self.client = Minio(
-            MINIO_CONFIG["endpoint"],
-            access_key=MINIO_CONFIG["access_key"],
-            secret_key=MINIO_CONFIG["secret_key"],
-            secure=MINIO_CONFIG["secure"]
+def run_inference(video_path: str, audio_path: str, output_path: str, 
+                 inference_steps: int = 20, guidance_scale: float = 2.0) -> bool:
+    """Chạy LatentSync inference bằng subprocess"""
+    try:
+        # Construct command
+        cmd = [
+            "python", "-m", "scripts.inference",
+            "--unet_config_path", "configs/unet/stage2.yaml",
+            "--inference_ckpt_path", "checkpoints/latentsync_unet.pt",
+            "--inference_steps", str(inference_steps),
+            "--guidance_scale", str(guidance_scale),
+            "--video_path", video_path,
+            "--audio_path", audio_path,
+            "--video_out_path", output_path
+        ]
+        
+        logger.info(f"Running command: {' '.join(cmd)}")
+        
+        # Run subprocess
+        result = subprocess.run(
+            cmd,
+            cwd="/app",
+            capture_output=True,
+            text=True,
+            timeout=1000  # 5 minutes timeout
         )
-        self.bucket = MINIO_CONFIG["bucket"]
-        self._ensure_bucket_exists()
-    
-    def _ensure_bucket_exists(self):
-        """Ensure bucket exists"""
-        try:
-            if not self.client.bucket_exists(self.bucket):
-                self.client.make_bucket(self.bucket)
-                logger.info(f"Created bucket: {self.bucket}")
-        except Exception as e:
-            logger.warning(f"Could not ensure bucket exists: {e}")
-    
-    def upload_file(self, local_path: str, object_name: str = None, 
-                   content_type: str = "video/mp4") -> str:
-        """Upload file to MinIO with retry logic"""
-        if object_name is None:
-            object_name = clean_filename(os.path.basename(local_path))
         
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                self.client.fput_object(
-                    self.bucket, 
-                    object_name, 
-                    local_path,
-                    content_type=content_type
-                )
-                
-                file_name_encoded = quote(object_name)
-                protocol = "https" if MINIO_CONFIG["secure"] else "http"
-                file_url = f"{protocol}://{MINIO_CONFIG['endpoint']}/{self.bucket}/{file_name_encoded}"
-                
-                logger.info(f"Successfully uploaded: {file_url}")
-                return file_url
-                
-            except S3Error as e:
-                logger.error(f"MinIO upload attempt {attempt + 1} failed: {e}")
-                if attempt == max_retries - 1:
-                    raise e
-                time.sleep(2 ** attempt)
-
-# ==================== LATENTSYNC PROCESSOR ====================
-
-class LatentSyncProcessor:
-    """Optimized LatentSync processor for RunPod Serverless"""
-    
-    def __init__(self):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.dtype = self._get_optimal_dtype()
-        self.models_loaded = False
-        self.config = None
-        self.pipeline = None
+        # Log output
+        if result.stdout:
+            logger.info(f"Inference stdout: {result.stdout}")
+        if result.stderr:
+            logger.warning(f"Inference stderr: {result.stderr}")
         
-        logger.info(f"Initializing LatentSync on {self.device} with {self.dtype}")
-        
-        # Initialize MinIO
-        self.minio = MinIOManager()
-        
-    def _get_optimal_dtype(self) -> torch.dtype:
-        """Determine optimal dtype based on GPU capability"""
-        if torch.cuda.is_available():
-            capability = torch.cuda.get_device_capability()
-            if capability[0] >= 8:
-                return torch.float16
-            elif capability[0] >= 7:
-                return torch.float16
-        return torch.float32
-    
-    def _load_models(self, job: Dict[str, Any]):
-        """Load models with progress updates - FIXED: Pass job object"""
-        if self.models_loaded:
-            return
-            
-        try:
-            runpod.serverless.progress_update(job, "Loading configuration...")
-            
-            # Load config
-            self.config = OmegaConf.load(MODEL_CONFIG["config_path"])
-            
-            runpod.serverless.progress_update(job, "Loading VAE...")
-            
-            # Load VAE
-            vae = AutoencoderKL.from_pretrained(
-                MODEL_CONFIG["vae_model"], 
-                torch_dtype=self.dtype
-            )
-            vae.config.scaling_factor = 0.18215
-            vae.config.shift_factor = 0
-            
-            runpod.serverless.progress_update(job, "Loading audio encoder...")
-            
-            # Load Audio Encoder
-            if self.config.model.cross_attention_dim == 768:
-                whisper_path = MODEL_CONFIG["whisper_small"]
-            elif self.config.model.cross_attention_dim == 384:
-                whisper_path = MODEL_CONFIG["whisper_tiny"]
-            else:
-                raise ValueError("cross_attention_dim must be 768 or 384")
-            
-            audio_encoder = Audio2Feature(
-                model_path=whisper_path,
-                device=self.device,
-                num_frames=self.config.data.num_frames,
-                audio_feat_length=self.config.data.audio_feat_length,
-            )
-            
-            runpod.serverless.progress_update(job, "Loading UNet...")
-            
-            # Load UNet
-            denoising_unet, _ = UNet3DConditionModel.from_pretrained(
-                OmegaConf.to_container(self.config.model),
-                MODEL_CONFIG["unet_checkpoint"],
-                device="cpu",
-            )
-            denoising_unet = denoising_unet.to(dtype=self.dtype)
-            
-            runpod.serverless.progress_update(job, "Loading scheduler...")
-            
-            # Load Scheduler
-            scheduler = DDIMScheduler.from_pretrained("configs")
-            
-            runpod.serverless.progress_update(job, "Assembling pipeline...")
-            
-            # Create Pipeline
-            self.pipeline = LipsyncPipeline(
-                vae=vae,
-                audio_encoder=audio_encoder,
-                denoising_unet=denoising_unet,
-                scheduler=scheduler,
-            ).to(self.device)
-            
-            self.models_loaded = True
-            logger.info("All models loaded successfully")
-            
-        except Exception as e:
-            logger.error(f"Failed to load models: {e}")
-            raise e
-    
-    def download_file(self, url: str, local_path: str, job: Dict[str, Any], 
-                     file_type: str = "file") -> bool:
-        """Download file with progress updates - FIXED: Pass job object"""
-        try:
-            runpod.serverless.progress_update(job, f"Downloading {file_type}...")
-            
-            response = requests.get(url, stream=True, timeout=60)
-            response.raise_for_status()
-            
-            total_size = int(response.headers.get('content-length', 0))
-            downloaded = 0
-            
-            with open(local_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        
-                        # Update progress every 10%
-                        if total_size > 0:
-                            progress = (downloaded / total_size) * 100
-                            if progress % 10 < 1:
-                                runpod.serverless.progress_update(
-                                    job, 
-                                    f"Downloading {file_type}: {progress:.0f}%"
-                                )
-            
-            logger.info(f"Downloaded {file_type}: {local_path}")
+        # Check if successful
+        if result.returncode == 0 and os.path.exists(output_path):
+            logger.info("Inference completed successfully")
             return True
-            
-        except Exception as e:
-            logger.error(f"Failed to download {file_type} from {url}: {e}")
+        else:
+            logger.error(f"Inference failed with return code: {result.returncode}")
             return False
-    
-    def process_lipsync(self, video_path: str, audio_path: str, job: Dict[str, Any],
-                       inference_steps: int = 20, guidance_scale: float = 2.0,
-                       seed: int = -1) -> str:
-        """Process lip sync with progress updates - FIXED: Pass job object"""
-        
-        # Generate output filename
-        output_filename = f"lipsync_{uuid.uuid4().hex}.mp4"
-        temp_output = f"/tmp/{output_filename}"
-        
-        try:
-            runpod.serverless.progress_update(job, "Starting lip sync processing...")
             
-            # Set seed
-            if seed != -1:
-                set_seed(seed)
-            else:
-                torch.seed()
-            
-            initial_seed = torch.initial_seed()
-            logger.info(f"Using seed: {initial_seed}")
-            
-            # Run pipeline
-            self.pipeline(
-                video_path=video_path,
-                audio_path=audio_path,
-                video_out_path=temp_output,
-                video_mask_path=temp_output.replace(".mp4", "_mask.mp4"),
-                num_frames=self.config.data.num_frames,
-                num_inference_steps=inference_steps,
-                guidance_scale=guidance_scale,
-                weight_dtype=self.dtype,
-                width=self.config.data.resolution,
-                height=self.config.data.resolution,
-                mask_image_path=self.config.data.mask_image_path,
-            )
-            
-            runpod.serverless.progress_update(job, "Lip sync processing completed!")
-            
-            if not os.path.exists(temp_output):
-                raise RuntimeError("Output video was not generated")
-            
-            return temp_output
-            
-        except Exception as e:
-            logger.error(f"Lip sync processing failed: {e}")
-            raise e
-    
-    def cleanup_memory(self):
-        """Clean up GPU memory"""
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        gc.collect()
+    except subprocess.TimeoutExpired:
+        logger.error("Inference timeout")
+        return False
+    except Exception as e:
+        logger.error(f"Inference error: {e}")
+        return False
 
-# ==================== GLOBAL PROCESSOR INSTANCE ====================
-
-processor = None
-
-def get_processor() -> LatentSyncProcessor:
-    """Get or create processor instance (singleton pattern)"""
-    global processor
-    if processor is None:
-        processor = LatentSyncProcessor()
-    return processor
-
-# ==================== MAIN HANDLER ====================
-
-def handler(job: Dict[str, Any]) -> Dict[str, Any]:
+def handler(job):
     """
-    Main RunPod serverless handler - FIXED: Progress updates với job object
+    Main RunPod handler
+    
+    Expected input:
+    {
+        "video_url": "https://example.com/video.mp4",
+        "audio_url": "https://example.com/audio.wav",
+        "inference_steps": 20,
+        "guidance_scale": 2.0
+    }
     """
     
-    job_id = job.get("id", "unknown")  # Chỉ dùng để logging
+    job_id = job.get("id", "unknown")
     start_time = time.time()
     
     try:
-        # Extract and validate input
+        # Get input
         job_input = job.get("input", {})
-        
         video_url = job_input.get("video_url")
         audio_url = job_input.get("audio_url")
         
         if not video_url or not audio_url:
-            return {
-                "error": "Missing required inputs: video_url and audio_url are required",
-                "status": "failed"
-            }
+            return {"error": "Missing video_url or audio_url"}
         
-        # Validate URLs
-        if not validate_url(video_url) or not validate_url(audio_url):
-            return {
-                "error": "Invalid URL format for video_url or audio_url",
-                "status": "failed"
-            }
+        # Optional parameters
+        inference_steps = job_input.get("inference_steps", 20)
+        guidance_scale = job_input.get("guidance_scale", 2.0)
         
-        # Extract optional parameters
-        inference_steps = job_input.get("inference_steps", DEFAULT_PARAMS["inference_steps"])
-        guidance_scale = job_input.get("guidance_scale", DEFAULT_PARAMS["guidance_scale"])
-        seed = job_input.get("seed", DEFAULT_PARAMS["seed"])
+        logger.info(f"Job {job_id}: Processing video={video_url}, audio={audio_url}")
         
-        # Validate parameters
-        if not (1 <= inference_steps <= 100):
-            return {
-                "error": "inference_steps must be between 1 and 100",
-                "status": "failed"
-            }
-        
-        if not (0.1 <= guidance_scale <= 20.0):
-            return {
-                "error": "guidance_scale must be between 0.1 and 20.0", 
-                "status": "failed"
-            }
-        
-        logger.info(f"Processing job {job_id}: video={video_url}, audio={audio_url}")
-        
-        # FIXED: Pass job object instead of job_id
-        runpod.serverless.progress_update(job, "Initializing processor...")
-        
-        # Get processor and load models
-        proc = get_processor()
-        proc._load_models(job)  # Pass job object
-        
-        # Create temporary directory for this job
-        with tempfile.TemporaryDirectory(prefix=f"lipsync_{job_id}_") as temp_dir:
+        # Create temp directory
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # File paths
+            video_path = os.path.join(temp_dir, "input_video.mp4")
+            audio_path = os.path.join(temp_dir, "input_audio.wav") 
+            output_path = os.path.join(temp_dir, "output_video.mp4")
             
-            # Download input files
-            video_ext = get_file_extension(video_url) or ".mp4"
-            audio_ext = get_file_extension(audio_url) or ".wav"
+            # Download files
+            logger.info("Downloading input files...")
+            if not download_file(video_url, video_path):
+                return {"error": "Failed to download video"}
             
-            video_path = os.path.join(temp_dir, f"input_video{video_ext}")
-            audio_path = os.path.join(temp_dir, f"input_audio{audio_ext}")
+            if not download_file(audio_url, audio_path):
+                return {"error": "Failed to download audio"}
             
-            # Download video - Pass job object
-            if not proc.download_file(video_url, video_path, job, "video"):
-                return {
-                    "error": f"Failed to download video from: {video_url}",
-                    "status": "failed"
-                }
+            # Run inference
+            logger.info("Running LatentSync inference...")
+            if not run_inference(video_path, audio_path, output_path, 
+                               inference_steps, guidance_scale):
+                return {"error": "Inference failed"}
             
-            # Download audio - Pass job object
-            if not proc.download_file(audio_url, audio_path, job, "audio"):
-                return {
-                    "error": f"Failed to download audio from: {audio_url}",
-                    "status": "failed"
-                }
-            
-            # Verify downloaded files
-            if not os.path.exists(video_path) or os.path.getsize(video_path) == 0:
-                return {
-                    "error": "Downloaded video file is empty or corrupted",
-                    "status": "failed"
-                }
-            
-            if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
-                return {
-                    "error": "Downloaded audio file is empty or corrupted", 
-                    "status": "failed"
-                }
-            
-            # Process lip sync - Pass job object
-            output_path = proc.process_lipsync(
-                video_path=video_path,
-                audio_path=audio_path,
-                job=job,  # Pass job object
-                inference_steps=inference_steps,
-                guidance_scale=guidance_scale,
-                seed=seed
-            )
-            
-            runpod.serverless.progress_update(job, "Uploading result to storage...")
+            # Check output exists
+            if not os.path.exists(output_path):
+                return {"error": "Output video not generated"}
             
             # Upload to MinIO
+            logger.info("Uploading result...")
             output_filename = f"lipsync_{job_id}_{uuid.uuid4().hex[:8]}.mp4"
-            output_url = proc.minio.upload_file(output_path, output_filename)
+            output_url = upload_to_minio(output_path, output_filename)
             
             # Calculate processing time
             processing_time = time.time() - start_time
             
-            # Clean up temporary output file
-            if os.path.exists(output_path):
-                os.remove(output_path)
-            
-            # Clean up memory
-            proc.cleanup_memory()
-            
-            runpod.serverless.progress_update(job, "Processing completed successfully!")
-            
-            # Return success response
+            # Return result
             return {
                 "output_video_url": output_url,
-                "processing_info": {
-                    "inference_steps": inference_steps,
-                    "guidance_scale": guidance_scale,
-                    "seed": torch.initial_seed() if seed == -1 else seed,
-                    "processing_time_seconds": round(processing_time, 2),
-                    "device": proc.device,
-                    "dtype": str(proc.dtype)
-                },
+                "processing_time_seconds": round(processing_time, 2),
+                "inference_steps": inference_steps,
+                "guidance_scale": guidance_scale,
                 "status": "completed"
             }
     
-    except torch.cuda.OutOfMemoryError as e:
-        logger.error(f"GPU out of memory: {e}")
-        if 'proc' in locals():
-            proc.cleanup_memory()
-        return {
-            "error": "GPU out of memory. Try reducing video resolution or length.",
-            "status": "failed",
-            "error_type": "gpu_memory"
-        }
-    
-    except FileNotFoundError as e:
-        logger.error(f"Required file not found: {e}")
-        return {
-            "error": f"Required model file not found: {str(e)}",
-            "status": "failed", 
-            "error_type": "missing_file"
-        }
-    
     except Exception as e:
-        logger.error(f"Unexpected error in job {job_id}: {e}", exc_info=True)
-        if 'proc' in locals():
-            proc.cleanup_memory()
+        logger.error(f"Handler error: {e}")
         return {
-            "error": f"Internal processing error: {str(e)}",
-            "status": "failed",
-            "error_type": "internal_error"
+            "error": str(e),
+            "status": "failed"
         }
-
-# ==================== MAIN ENTRY POINT ====================
 
 if __name__ == "__main__":
     logger.info("Starting LatentSync RunPod Serverless Worker...")
-    logger.info(f"CUDA Available: {torch.cuda.is_available()}")
-    if torch.cuda.is_available():
-        logger.info(f"GPU: {torch.cuda.get_device_name()}")
-        logger.info(f"CUDA Version: {torch.version.cuda}")
     
-    # Start RunPod serverless
-    runpod.serverless.start({
-        "handler": handler,
-        "return_aggregate_stream": False,
-    })
+    # Verify environment
+    try:
+        import torch
+        logger.info(f"CUDA Available: {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            logger.info(f"GPU: {torch.cuda.get_device_name()}")
+    except:
+        logger.warning("PyTorch not available")
+    
+    # Start RunPod
+    runpod.serverless.start({"handler": handler})
