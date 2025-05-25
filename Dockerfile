@@ -9,17 +9,12 @@ ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 ENV CUDA_MODULE_LOADING=LAZY
 
-# Verify environment trước khi bắt đầu
-RUN python --version && \
-    python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA Available: {torch.cuda.is_available()}'); print(f'CUDA Version: {torch.version.cuda}')" && \
-    cat /etc/os-release
-
-# Install system dependencies including python3.10-devel và file utility
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     python3.10-dev \
     python3.10-distutils \
     build-essential \
-    file \
+    libgl1 \
     ffmpeg \
     libgl1-mesa-glx \
     libglib2.0-0 \
@@ -31,13 +26,6 @@ RUN apt-get update && apt-get install -y \
     curl \
     git \
     && rm -rf /var/lib/apt/lists/*
-
-# Verify Python development headers are available
-RUN echo "=== Verifying Python Development Environment ===" && \
-    python3.10-config --cflags && \
-    python3.10-config --ldflags && \
-    ls -la /usr/include/python3.10/ && \
-    echo "✅ Python3.10 development headers verified"
 
 # Copy requirements file
 COPY requirements.txt /app/
@@ -83,44 +71,32 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     easydict \
     cython
 
-# Download InsightFace wheel với improved reliability
-RUN echo "=== Downloading InsightFace wheel ===" && \
-    (wget --no-check-certificate --timeout=30 --tries=5 \
-    "https://huggingface.co/deauxpas/colabrepo/resolve/main/insightface-0.7.3-cp310-cp310-linux_x86_64.whl" \
-    -O /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl || \
-    curl -L -o /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl \
-    "https://huggingface.co/deauxpas/colabrepo/resolve/main/insightface-0.7.3-cp310-cp310-linux_x86_64.whl") && \
-    echo "Download completed successfully"
-
-# Verify downloaded file
-RUN echo "=== Verifying downloaded wheel ===" && \
-    ls -la /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl && \
-    file /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl
-
-# Install InsightFace wheel - FIXED syntax
+# Try to install InsightFace directly, fallback to wheel if failed
 RUN --mount=type=cache,target=/root/.cache/pip \
-    echo "=== Installing InsightFace ===" && \
-    pip install /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl --force-reinstall
+    echo "=== Attempting to install InsightFace via pip ===" && \
+    pip install insightface==0.7.3 --no-cache-dir || \
+    (echo "=== Pip install failed, downloading wheel ===" && \
+    wget --no-check-certificate --timeout=30 --tries=3 \
+    "https://huggingface.co/deauxpas/colabrepo/resolve/main/insightface-0.7.3-cp310-cp310-linux_x86_64.whl" \
+    -O /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl && \
+    pip install /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl --force-reinstall && \
+    rm -f /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl)
 
-# Clean up wheel file
-RUN rm -f /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl
+# Verify InsightFace installation
+RUN python -c "import insightface; print(f'✅ InsightFace: {insightface.__version__}')"
 
-# Verify InsightFace installation với basic check
-RUN python -c "import insightface; print(f'✅ InsightFace: {insightface.__version__}')" && \
-    echo "✅ InsightFace basic import successful"
+# Create checkpoints directory
+RUN mkdir -p /app/checkpoints
 
-# Copy download models script và thực hiện download
-COPY download_models.py /app/
-RUN python download_models.py
-
-# Verify all core dependencies
-RUN python -c "import torch, cv2, numpy as np, transformers, diffusers; print('=== Dependencies OK ==='); print(f'PyTorch: {torch.__version__}'); print(f'CUDA: {torch.cuda.is_available()}'); print('All core dependencies verified')"
+# Download models using huggingface-cli
+RUN huggingface-cli download ByteDance/LatentSync-1.5 whisper/tiny.pt --local-dir checkpoints && \
+    huggingface-cli download ByteDance/LatentSync-1.5 latentsync_unet.pt --local-dir checkpoints
 
 # Copy source code
 COPY . /app/
 
 # Create working directories
-RUN mkdir -p /app/temp /app/output /app/checkpoints
+RUN mkdir -p /app/temp /app/output
 
 # Set environment variables
 ENV PYTHONPATH="/app"
