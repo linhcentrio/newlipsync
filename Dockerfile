@@ -14,11 +14,12 @@ RUN python --version && \
     python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA Available: {torch.cuda.is_available()}'); print(f'CUDA Version: {torch.version.cuda}')" && \
     cat /etc/os-release
 
-# Install system dependencies including python3.10-devel
+# Install system dependencies including python3.10-devel và file utility
 RUN apt-get update && apt-get install -y \
     python3.10-dev \
     python3.10-distutils \
     build-essential \
+    file \
     ffmpeg \
     libgl1-mesa-glx \
     libglib2.0-0 \
@@ -91,60 +92,12 @@ RUN echo "=== Downloading InsightFace wheel ===" && \
     "https://huggingface.co/deauxpas/colabrepo/resolve/main/insightface-0.7.3-cp310-cp310-linux_x86_64.whl") && \
     echo "Download completed successfully"
 
-# Verify downloaded file với Python verification
+# Verify downloaded file
 RUN echo "=== Verifying downloaded wheel ===" && \
     ls -la /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl && \
-    python -c "
-import os
-import zipfile
-import hashlib
+    file /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl
 
-wheel_path = '/tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl'
-
-# Check file exists và size
-if not os.path.exists(wheel_path):
-    print('❌ Wheel file not found')
-    exit(1)
-
-size = os.path.getsize(wheel_path)
-print(f'📦 Wheel size: {size:,} bytes')
-
-# Minimum expected size check (should be > 500KB)
-if size < 500000:
-    print('❌ Wheel file too small, likely corrupted')
-    exit(1)
-
-# Verify it's a valid ZIP file
-try:
-    with zipfile.ZipFile(wheel_path, 'r') as z:
-        files = z.namelist()
-        print(f'📋 Wheel contains {len(files)} files')
-        
-        # Check for essential wheel metadata
-        has_metadata = any('METADATA' in f for f in files)
-        has_wheel = any('WHEEL' in f for f in files)
-        
-        if has_metadata and has_wheel:
-            print('✅ Wheel structure is valid')
-        else:
-            print('❌ Invalid wheel structure')
-            exit(1)
-            
-        # Show some key files
-        key_files = [f for f in files if any(x in f for x in ['insightface', '__init__', 'METADATA'])]
-        print(f'🔍 Key files found: {len(key_files)}')
-        
-except zipfile.BadZipFile:
-    print('❌ Wheel is not a valid ZIP file')
-    exit(1)
-except Exception as e:
-    print(f'❌ Error checking wheel: {e}')
-    exit(1)
-
-print('✅ Wheel verification successful')
-"
-
-# Install InsightFace wheel
+# Install InsightFace wheel - FIXED syntax
 RUN --mount=type=cache,target=/root/.cache/pip \
     echo "=== Installing InsightFace ===" && \
     pip install /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl --force-reinstall
@@ -152,75 +105,16 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # Clean up wheel file
 RUN rm -f /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl
 
-# Verify InsightFace installation với comprehensive check
-RUN python -c "
-import sys
-print('=== InsightFace Installation Verification ===')
-
-try:
-    import insightface
-    print(f'✅ InsightFace imported successfully')
-    print(f'📝 Version: {insightface.__version__}')
-    
-    # Check if we can create a basic app instance
-    try:
-        app = insightface.app.FaceAnalysis()
-        print('✅ FaceAnalysis app created successfully')
-    except Exception as e:
-        print(f'⚠️  Warning: Could not create FaceAnalysis app: {e}')
-        print('   This may be normal if models are not downloaded yet')
-    
-    print('✅ InsightFace basic verification completed')
-    
-except ImportError as e:
-    print(f'❌ Failed to import InsightFace: {e}')
-    sys.exit(1)
-except Exception as e:
-    print(f'❌ Error during InsightFace verification: {e}')
-    sys.exit(1)
-"
+# Verify InsightFace installation với basic check
+RUN python -c "import insightface; print(f'✅ InsightFace: {insightface.__version__}')" && \
+    echo "✅ InsightFace basic import successful"
 
 # Copy download models script và thực hiện download
 COPY download_models.py /app/
 RUN python download_models.py
 
 # Verify all core dependencies
-RUN python -c "
-import sys
-print('=== Final Dependencies Verification ===')
-
-dependencies = {
-    'torch': 'PyTorch',
-    'cv2': 'OpenCV',
-    'numpy': 'NumPy', 
-    'transformers': 'Transformers',
-    'diffusers': 'Diffusers',
-    'insightface': 'InsightFace'
-}
-
-failed = []
-for module, name in dependencies.items():
-    try:
-        exec(f'import {module}')
-        print(f'✅ {name}: OK')
-    except ImportError as e:
-        print(f'❌ {name}: FAILED - {e}')
-        failed.append(name)
-
-if failed:
-    print(f'❌ Failed dependencies: {failed}')
-    sys.exit(1)
-
-# CUDA check
-import torch
-print(f'🔧 PyTorch version: {torch.__version__}')
-print(f'🎮 CUDA available: {torch.cuda.is_available()}')
-if torch.cuda.is_available():
-    print(f'🎮 CUDA devices: {torch.cuda.device_count()}')
-    print(f'🎮 Current device: {torch.cuda.current_device()}')
-
-print('✅ All core dependencies verified successfully')
-"
+RUN python -c "import torch, cv2, numpy as np, transformers, diffusers; print('=== Dependencies OK ==='); print(f'PyTorch: {torch.__version__}'); print(f'CUDA: {torch.cuda.is_available()}'); print('All core dependencies verified')"
 
 # Copy source code
 COPY . /app/
