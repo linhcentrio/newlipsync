@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 RunPod Serverless Handler for AI Video Processing with Face Enhancement
-Optimized version with selective enhancement logic
+Optimized version with selective face enhancement
 """
 
 import runpod
@@ -56,17 +56,12 @@ MINIO_BUCKET = "aiclipdfl"
 MINIO_SECURE = False
 
 # Initialize MinIO client
-try:
-    minio_client = Minio(
-        MINIO_ENDPOINT,
-        access_key=MINIO_ACCESS_KEY,
-        secret_key=MINIO_SECRET_KEY,
-        secure=MINIO_SECURE
-    )
-    logger.info(f"✅ MinIO client initialized: {MINIO_ENDPOINT}")
-except Exception as e:
-    logger.error(f"❌ MinIO client initialization failed: {e}")
-    minio_client = None
+minio_client = Minio(
+    MINIO_ENDPOINT,
+    access_key=MINIO_ACCESS_KEY,
+    secret_key=MINIO_SECRET_KEY,
+    secure=MINIO_SECURE
+)
 
 # Global model instances
 detector = None
@@ -74,33 +69,11 @@ enhancer = None
 recognition = None
 config = None
 
-def test_minio_connection():
-    """Test MinIO connection and bucket access"""
-    try:
-        if minio_client is None:
-            return False, "MinIO client not initialized"
-        
-        if not minio_client.bucket_exists(MINIO_BUCKET):
-            return False, f"Bucket '{MINIO_BUCKET}' does not exist"
-        
-        list(minio_client.list_objects(MINIO_BUCKET, max_keys=1))
-        logger.info(f"✅ MinIO connection successful to bucket: {MINIO_BUCKET}")
-        return True, "Connection successful"
-        
-    except Exception as e:
-        logger.error(f"❌ MinIO connection test failed: {e}")
-        return False, str(e)
-
 def initialize_models():
     """Initialize all required models"""
     global detector, enhancer, recognition, config
     
     try:
-        # Test MinIO connection
-        minio_ok, minio_msg = test_minio_connection()
-        if not minio_ok:
-            logger.warning(f"⚠️ MinIO connection issue: {minio_msg}")
-        
         # Load configuration
         if not CONFIG_PATH.exists():
             raise FileNotFoundError(f"Config file not found: {CONFIG_PATH}")
@@ -135,7 +108,7 @@ def initialize_models():
         enhancer_path = "/app/enhancers/GFPGAN/GFPGANv1.4.onnx"
         if not os.path.exists(enhancer_path):
             raise FileNotFoundError(f"Face enhancer model not found: {enhancer_path}")
-            
+        
         device = 'cpu'
         if onnxruntime.get_device() == 'GPU':
             device = 'cuda'
@@ -143,7 +116,7 @@ def initialize_models():
         
         enhancer = GFPGAN(model_path=enhancer_path, device=device)
         logger.info(f"✅ Face enhancer initialized on {device}")
-        
+
     except Exception as e:
         logger.error(f"❌ Model initialization failed: {e}")
         raise e
@@ -174,23 +147,12 @@ def download_file(url: str, local_path: str) -> bool:
 def upload_to_minio(local_path: str, object_name: str) -> str:
     """Upload file to MinIO with enhanced error handling"""
     try:
-        if minio_client is None:
-            raise Exception("MinIO client not initialized")
-        
         if not os.path.exists(local_path):
             raise FileNotFoundError(f"Local file not found: {local_path}")
         
-        file_size = os.path.getsize(local_path) / (1024 * 1024)
-        logger.info(f"📤 Uploading {local_path} ({file_size:.1f} MB)")
-        
-        if not minio_client.bucket_exists(MINIO_BUCKET):
-            raise Exception(f"Bucket '{MINIO_BUCKET}' does not exist or no access")
-        
         minio_client.fput_object(MINIO_BUCKET, object_name, local_path)
-        
         file_url = f"http://{MINIO_ENDPOINT}/{MINIO_BUCKET}/{quote(object_name)}"
         logger.info(f"✅ Uploaded successfully: {file_url}")
-        
         return file_url
         
     except Exception as e:
@@ -230,23 +192,18 @@ def run_lipsync_inference(video_path: str, audio_path: str, output_path: str,
     try:
         logger.info("🎯 Running AI lipsync inference...")
         
-        # Update config with runtime parameters
         config["run"].update({
             "guidance_scale": guidance_scale,
             "inference_steps": inference_steps,
         })
         
-        # Create arguments
         args = create_args(video_path, audio_path, output_path, 
                           inference_steps, guidance_scale, seed)
         
-        # Run inference
         result = inference_main(config=config, args=args)
         
-        # Check output
         if os.path.exists(output_path):
-            file_size = os.path.getsize(output_path) / (1024 * 1024)
-            logger.info(f"✅ Lipsync inference completed successfully ({file_size:.1f} MB)")
+            logger.info(f"✅ Lipsync inference completed successfully")
             return True
         else:
             logger.error("❌ Lipsync inference failed - no output file")
@@ -307,7 +264,7 @@ def enhance_video_with_gfpgan(input_video_path: str, output_path: str = None) ->
         stats["total_frames"] = total_frames
         
         if output_path is None:
-            output_path = os.path.splitext(input_video_path)[0] + '_enhanced.mp4'
+            output_path = os.path.splitext(input_video_path)[0] + '_enhanced_gfpgan.mp4'
         
         # Create temporary video path
         temp_video_path = output_path.replace('.mp4', '_temp.mp4')
@@ -394,7 +351,7 @@ def enhance_video_with_gfpgan(input_video_path: str, output_path: str = None) ->
         if os.path.exists(audio_path):
             os.remove(audio_path)
         
-        logger.info(f"✅ Face enhancement completed: {output_path}")
+        logger.info(f"✅ Video processing completed: {output_path}")
         return True, stats
         
     except Exception as e:
@@ -437,15 +394,6 @@ def handler(job):
         logger.info(f"🎵 Audio: {audio_url}")
         logger.info(f"⚙️ Parameters: steps={inference_steps}, scale={guidance_scale}, seed={seed}, enhance={enable_enhancement}")
         
-        # Initialize face enhancement stats
-        face_stats = {
-            "total_frames": 0,
-            "frames_with_faces": 0,
-            "frames_without_faces": 0,
-            "faces_enhanced": 0,
-            "enhancement_applied": False
-        }
-        
         # Create temp directory
         with tempfile.TemporaryDirectory() as temp_dir:
             # File paths
@@ -479,10 +427,7 @@ def handler(job):
             face_enhancement_status = "disabled"
             
             if enable_enhancement:
-                logger.info("✨ Step 3/4: Applying selective face enhancement...")
-                logger.info("   - Frames with faces: Will be enhanced")
-                logger.info("   - Frames without faces: Will be kept original")
-                
+                logger.info("✨ Step 3/4: Applying face enhancement...")
                 enhancement_success, face_stats = enhance_video_with_gfpgan(lipsync_output_path, final_output_path)
                 
                 if not enhancement_success:
@@ -523,7 +468,7 @@ def handler(job):
                 "status": "completed"
             }
             
-            # Add face stats if enhancement was attempted
+            # Add face stats only if enhancement was attempted
             if enable_enhancement and face_stats["total_frames"] > 0:
                 response["face_enhancement_stats"] = {
                     "total_frames": face_stats["total_frames"],
