@@ -51,7 +51,7 @@ CHECKPOINT_PATH = Path("/app/checkpoints/latentsync_unet.pt")
 # MinIO Configuration
 MINIO_ENDPOINT = "108.181.198.160:9000"
 MINIO_ACCESS_KEY = "minioadmin"
-MINIO_SECRET_KEY = "aiclipdfl"
+MINIO_SECRET_KEY = "aiclip-dfl"
 MINIO_BUCKET = "aiclipdfl"
 MINIO_SECURE = False
 
