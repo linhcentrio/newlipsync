@@ -34,7 +34,7 @@ COPY requirements.txt /app/
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip setuptools wheel
 
-# Install dependencies
+# Install main dependencies từ requirements.txt (trừ InsightFace)
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --no-cache-dir \
     diffusers==0.32.2 \
@@ -58,10 +58,15 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     numpy==1.26.4 \
     kornia==0.8.0 \
     onnxruntime-gpu==1.21.0 \
+    DeepCache==0.1.1
+
+# Install additional dependencies for RunPod
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-cache-dir \
     runpod>=1.6.0 \
     minio>=7.0.0
 
-# Install InsightFace dependencies
+# Install InsightFace dependencies (cần thiết cho InsightFace)
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --no-cache-dir \
     scikit-image>=0.14.2 \
@@ -71,7 +76,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     easydict \
     cython
 
-# Try to install InsightFace directly, fallback to wheel if failed
+# Install InsightFace (có thể cần fallback strategy)
 RUN --mount=type=cache,target=/root/.cache/pip \
     echo "=== Attempting to install InsightFace via pip ===" && \
     pip install insightface==0.7.3 --no-cache-dir || \
@@ -82,10 +87,19 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl --force-reinstall && \
     rm -f /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl)
 
-# Verify InsightFace installation
-RUN python -c "import insightface; print(f'✅ InsightFace: {insightface.__version__}')"
+# Verify installations
+RUN echo "=== Verifying key packages ===" && \
+    python -c "import torch; print(f'✅ PyTorch: {torch.__version__}')" && \
+    python -c "import diffusers; print(f'✅ Diffusers: {diffusers.__version__}')" && \
+    python -c "import transformers; print(f'✅ Transformers: {transformers.__version__}')" && \
+    python -c "import DeepCache; print(f'✅ DeepCache: imported successfully')" && \
+    python -c "import insightface; print(f'✅ InsightFace: {insightface.__version__}')" && \
+    python -c "import cv2; print(f'✅ OpenCV: {cv2.__version__}')" && \
+    python -c "import onnxruntime; print(f'✅ ONNXRuntime: {onnxruntime.__version__}')" && \
+    python -c "import runpod; print(f'✅ RunPod: imported successfully')" && \
+    python -c "import minio; print(f'✅ MinIO: imported successfully')"
 
-# Copy source code FIRST (để có đủ cấu trúc thư mục)
+# Copy source code FIRST (để có đầy đủ cấu trúc thư mục)
 COPY . /app/
 
 # Download LatentSync-1.6 models
@@ -136,6 +150,59 @@ RUN echo "=== Model file sizes ===" && \
     ls -lh /app/faceID/recognition.onnx && \
     ls -lh /app/checkpoints/latentsync_unet.pt && \
     ls -lh /app/checkpoints/whisper/tiny.pt
+
+# Final import test để đảm bảo tất cả dependencies có thể import
+RUN echo "=== Final import test ===" && \
+    python -c "
+import sys
+print(f'Python: {sys.version}')
+
+# Test all major imports
+import torch
+print(f'PyTorch: {torch.__version__}')
+
+import diffusers
+from diffusers import DDIMScheduler, AutoencoderKL
+print(f'Diffusers: {diffusers.__version__}')
+
+import transformers
+print(f'Transformers: {transformers.__version__}')
+
+import DeepCache
+print('DeepCache: OK')
+
+import cv2
+print(f'OpenCV: {cv2.__version__}')
+
+import numpy as np
+print(f'NumPy: {np.__version__}')
+
+import onnxruntime
+print(f'ONNXRuntime: {onnxruntime.__version__}')
+
+import insightface
+print(f'InsightFace: {insightface.__version__}')
+
+import runpod
+print('RunPod: OK')
+
+import minio
+print('MinIO: OK')
+
+import omegaconf
+print('OmegaConf: OK')
+
+import librosa
+print('Librosa: OK')
+
+import face_alignment
+print('Face Alignment: OK')
+
+import tqdm
+print('TQDM: OK')
+
+print('🎉 All dependencies imported successfully!')
+"
 
 # Set environment variables
 ENV PYTHONPATH="/app"
