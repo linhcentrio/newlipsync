@@ -85,50 +85,57 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # Verify InsightFace installation
 RUN python -c "import insightface; print(f'✅ InsightFace: {insightface.__version__}')"
 
-# Download LatentSync-1.6 models (chỉ download models, không tạo thư mục)
+# Copy source code FIRST (để có đủ cấu trúc thư mục)
+COPY . /app/
+
+# Download LatentSync-1.6 models
 RUN echo "=== Downloading LatentSync-1.6 models ===" && \
+    mkdir -p /app/checkpoints/whisper && \
     huggingface-cli download ByteDance/LatentSync-1.6 whisper/tiny.pt --local-dir checkpoints && \
     huggingface-cli download ByteDance/LatentSync-1.6 latentsync_unet.pt --local-dir checkpoints && \
     echo "✅ LatentSync models downloaded"
 
-# Download GFPGAN model
+# Download GFPGAN model - trực tiếp vào đúng vị trí
 RUN echo "=== Downloading GFPGAN model ===" && \
+    mkdir -p /app/enhancers/GFPGAN && \
     wget --no-check-certificate --timeout=60 --tries=3 \
     "https://huggingface.co/OwlMaster/AllFilesRope/resolve/main/GFPGANv1.4.onnx" \
-    -O /tmp/GFPGANv1.4.onnx && \
-    echo "✅ GFPGAN model downloaded to temp"
+    -O /app/enhancers/GFPGAN/GFPGANv1.4.onnx && \
+    echo "✅ GFPGAN model downloaded"
 
-# Download RetinaFace model for face detection
+# Download RetinaFace model - trực tiếp vào đúng vị trí
 RUN echo "=== Downloading RetinaFace model ===" && \
+    mkdir -p /app/utils && \
     wget --no-check-certificate --timeout=60 --tries=3 \
     "https://huggingface.co/OwlMaster/AllFilesRope/resolve/main/scrfd_2.5g_bnkps.onnx" \
-    -O /tmp/scrfd_2.5g_bnkps.onnx && \
-    echo "✅ RetinaFace model downloaded to temp"
+    -O /app/utils/scrfd_2.5g_bnkps.onnx && \
+    echo "✅ RetinaFace model downloaded"
 
-# Download FaceRecognition model
+# Download FaceRecognition model - trực tiếp vào đúng vị trí
 RUN echo "=== Downloading FaceRecognition model ===" && \
+    mkdir -p /app/faceID && \
     wget --no-check-certificate --timeout=60 --tries=3 \
     "http://108.181.198.160:9000/aiclipdfl/recognition.onnx" \
-    -O /tmp/recognition.onnx && \
-    echo "✅ FaceRecognition model downloaded to temp"
-
-# Copy source code (các thư mục đã tồn tại)
-COPY . /app/
-
-# Move downloaded models to correct locations
-RUN mv /tmp/GFPGANv1.4.onnx /app/enhancers/GFPGAN/ && \
-    mv /tmp/scrfd_2.5g_bnkps.onnx /app/utils/ && \
-    mv /tmp/recognition.onnx /app/faceID/ && \
-    echo "✅ Models moved to correct locations"
+    -O /app/faceID/recognition.onnx && \
+    echo "✅ FaceRecognition model downloaded"
 
 # Verify tất cả model files exist
 RUN echo "=== Verifying model files ===" && \
+    ls -la /app/configs/unet/ && \
     test -f /app/configs/unet/stage2_512.yaml && echo "✅ Config stage2_512.yaml verified" && \
     test -f /app/enhancers/GFPGAN/GFPGANv1.4.onnx && echo "✅ GFPGAN model verified" && \
     test -f /app/utils/scrfd_2.5g_bnkps.onnx && echo "✅ RetinaFace model verified" && \
     test -f /app/faceID/recognition.onnx && echo "✅ FaceRecognition model verified" && \
     test -f /app/checkpoints/latentsync_unet.pt && echo "✅ LatentSync UNet verified" && \
     test -f /app/checkpoints/whisper/tiny.pt && echo "✅ Whisper model verified"
+
+# Show file sizes for verification
+RUN echo "=== Model file sizes ===" && \
+    ls -lh /app/enhancers/GFPGAN/GFPGANv1.4.onnx && \
+    ls -lh /app/utils/scrfd_2.5g_bnkps.onnx && \
+    ls -lh /app/faceID/recognition.onnx && \
+    ls -lh /app/checkpoints/latentsync_unet.pt && \
+    ls -lh /app/checkpoints/whisper/tiny.pt
 
 # Set environment variables
 ENV PYTHONPATH="/app"
