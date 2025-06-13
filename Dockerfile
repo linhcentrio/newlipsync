@@ -87,17 +87,25 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl --force-reinstall && \
     rm -f /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl)
 
-# Verify installations
+# Verify installations - chia thành nhiều RUN commands
 RUN echo "=== Verifying key packages ===" && \
-    python -c "import torch; print(f'✅ PyTorch: {torch.__version__}')" && \
-    python -c "import diffusers; print(f'✅ Diffusers: {diffusers.__version__}')" && \
-    python -c "import transformers; print(f'✅ Transformers: {transformers.__version__}')" && \
-    python -c "import DeepCache; print(f'✅ DeepCache: imported successfully')" && \
-    python -c "import insightface; print(f'✅ InsightFace: {insightface.__version__}')" && \
-    python -c "import cv2; print(f'✅ OpenCV: {cv2.__version__}')" && \
-    python -c "import onnxruntime; print(f'✅ ONNXRuntime: {onnxruntime.__version__}')" && \
-    python -c "import runpod; print(f'✅ RunPod: imported successfully')" && \
-    python -c "import minio; print(f'✅ MinIO: imported successfully')"
+    python -c "import torch; print(f'✅ PyTorch: {torch.__version__}')"
+
+RUN python -c "import diffusers; print(f'✅ Diffusers: {diffusers.__version__}')"
+
+RUN python -c "import transformers; print(f'✅ Transformers: {transformers.__version__}')"
+
+RUN python -c "import DeepCache; print('✅ DeepCache: imported successfully')"
+
+RUN python -c "import insightface; print(f'✅ InsightFace: {insightface.__version__}')"
+
+RUN python -c "import cv2; print(f'✅ OpenCV: {cv2.__version__}')"
+
+RUN python -c "import onnxruntime; print(f'✅ ONNXRuntime: {onnxruntime.__version__}')"
+
+RUN python -c "import runpod; print('✅ RunPod: imported successfully')"
+
+RUN python -c "import minio; print('✅ MinIO: imported successfully')"
 
 # Copy source code FIRST (để có đầy đủ cấu trúc thư mục)
 COPY . /app/
@@ -151,58 +159,24 @@ RUN echo "=== Model file sizes ===" && \
     ls -lh /app/checkpoints/latentsync_unet.pt && \
     ls -lh /app/checkpoints/whisper/tiny.pt
 
-# Final import test để đảm bảo tất cả dependencies có thể import
-RUN echo "=== Final import test ===" && \
-    python -c "
-import sys
-print(f'Python: {sys.version}')
-
-# Test all major imports
-import torch
-print(f'PyTorch: {torch.__version__}')
-
-import diffusers
-from diffusers import DDIMScheduler, AutoencoderKL
-print(f'Diffusers: {diffusers.__version__}')
-
-import transformers
-print(f'Transformers: {transformers.__version__}')
-
-import DeepCache
-print('DeepCache: OK')
-
-import cv2
-print(f'OpenCV: {cv2.__version__}')
-
-import numpy as np
-print(f'NumPy: {np.__version__}')
-
-import onnxruntime
-print(f'ONNXRuntime: {onnxruntime.__version__}')
-
-import insightface
-print(f'InsightFace: {insightface.__version__}')
-
-import runpod
-print('RunPod: OK')
-
-import minio
-print('MinIO: OK')
-
-import omegaconf
-print('OmegaConf: OK')
-
-import librosa
-print('Librosa: OK')
-
-import face_alignment
-print('Face Alignment: OK')
-
-import tqdm
-print('TQDM: OK')
-
-print('🎉 All dependencies imported successfully!')
-"
+# Final comprehensive test
+RUN echo "=== Final comprehensive import test ===" && \
+    python -c "import sys; print(f'Python: {sys.version}')" && \
+    python -c "import torch; print(f'PyTorch: {torch.__version__}')" && \
+    python -c "import diffusers; print(f'Diffusers: {diffusers.__version__}')" && \
+    python -c "import transformers; print(f'Transformers: {transformers.__version__}')" && \
+    python -c "import DeepCache; print('DeepCache: OK')" && \
+    python -c "import cv2; print(f'OpenCV: {cv2.__version__}')" && \
+    python -c "import numpy as np; print(f'NumPy: {np.__version__}')" && \
+    python -c "import onnxruntime; print(f'ONNXRuntime: {onnxruntime.__version__}')" && \
+    python -c "import insightface; print(f'InsightFace: {insightface.__version__}')" && \
+    python -c "import runpod; print('RunPod: OK')" && \
+    python -c "import minio; print('MinIO: OK')" && \
+    python -c "import omegaconf; print('OmegaConf: OK')" && \
+    python -c "import librosa; print('Librosa: OK')" && \
+    python -c "import face_alignment; print('Face Alignment: OK')" && \
+    python -c "import tqdm; print('TQDM: OK')" && \
+    echo "🎉 All dependencies imported successfully!"
 
 # Set environment variables
 ENV PYTHONPATH="/app"
