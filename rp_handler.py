@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 RunPod Serverless Handler for AI Video Processing with Face Enhancement
-Optimized version with security considerations
+Optimized version with selective enhancement logic
 """
 
 import runpod
@@ -83,7 +83,6 @@ def test_minio_connection():
         if not minio_client.bucket_exists(MINIO_BUCKET):
             return False, f"Bucket '{MINIO_BUCKET}' does not exist"
         
-        # Test basic permissions
         list(minio_client.list_objects(MINIO_BUCKET, max_keys=1))
         logger.info(f"✅ MinIO connection successful to bucket: {MINIO_BUCKET}")
         return True, "Connection successful"
@@ -137,7 +136,6 @@ def initialize_models():
         if not os.path.exists(enhancer_path):
             raise FileNotFoundError(f"Face enhancer model not found: {enhancer_path}")
             
-        # Detect device
         device = 'cpu'
         if onnxruntime.get_device() == 'GPU':
             device = 'cuda'
@@ -275,7 +273,7 @@ def process_batch(frame_buffer, enhancer, face_mask, out, frame_width, frame_hei
         
         out.write(final_frame)
 
-def enhance_video_with_face_enhancement(input_video_path: str, output_path: str = None) -> tuple[bool, dict]:
+def enhance_video_with_gfpgan(input_video_path: str, output_path: str = None) -> tuple[bool, dict]:
     """
     Apply selective face enhancement to video
     - Frames with faces: enhanced
@@ -481,8 +479,11 @@ def handler(job):
             face_enhancement_status = "disabled"
             
             if enable_enhancement:
-                logger.info("✨ Step 3/4: Applying face enhancement...")
-                enhancement_success, face_stats = enhance_video_with_face_enhancement(lipsync_output_path, final_output_path)
+                logger.info("✨ Step 3/4: Applying selective face enhancement...")
+                logger.info("   - Frames with faces: Will be enhanced")
+                logger.info("   - Frames without faces: Will be kept original")
+                
+                enhancement_success, face_stats = enhance_video_with_gfpgan(lipsync_output_path, final_output_path)
                 
                 if not enhancement_success:
                     logger.warning("⚠️ Face enhancement failed, using lipsync result")
@@ -493,7 +494,6 @@ def handler(job):
                     logger.info(f"✅ Enhanced {face_stats['frames_with_faces']}/{face_stats['total_frames']} frames")
                 else:
                     face_enhancement_status = "no_faces_detected"
-                    final_output_path = lipsync_output_path
                     logger.info("ℹ️ No faces detected, keeping original quality")
             else:
                 logger.info("⏭️ Step 3/4: Face enhancement disabled")
@@ -523,7 +523,7 @@ def handler(job):
                 "status": "completed"
             }
             
-            # Add face stats only if enhancement was attempted
+            # Add face stats if enhancement was attempted
             if enable_enhancement and face_stats["total_frames"] > 0:
                 response["face_enhancement_stats"] = {
                     "total_frames": face_stats["total_frames"],
