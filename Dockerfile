@@ -34,7 +34,7 @@ COPY requirements.txt /app/
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip setuptools wheel
 
-# Install main dependencies từ requirements.txt (trừ InsightFace)
+# Install dependencies
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --no-cache-dir \
     diffusers==0.32.2 \
@@ -58,15 +58,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     numpy==1.26.4 \
     kornia==0.8.0 \
     onnxruntime-gpu==1.21.0 \
+    runpod>=1.6.0 \
+    minio>=7.0.0 \
     DeepCache==0.1.1
 
-# Install additional dependencies for RunPod
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --no-cache-dir \
-    runpod>=1.6.0 \
-    minio>=7.0.0
-
-# Install InsightFace dependencies (cần thiết cho InsightFace)
+# Install InsightFace dependencies
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --no-cache-dir \
     scikit-image>=0.14.2 \
@@ -76,7 +72,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     easydict \
     cython
 
-# Install InsightFace (có thể cần fallback strategy)
+# Try to install InsightFace directly, fallback to wheel if failed
 RUN --mount=type=cache,target=/root/.cache/pip \
     echo "=== Attempting to install InsightFace via pip ===" && \
     pip install insightface==0.7.3 --no-cache-dir || \
@@ -87,7 +83,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl --force-reinstall && \
     rm -f /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl)
 
-# Copy source code FIRST (để có đầy đủ cấu trúc thư mục)
+# Verify InsightFace installation
+RUN python -c "import insightface; print(f'✅ InsightFace: {insightface.__version__}')"
+
+# Copy source code FIRST (để có đủ cấu trúc thư mục)
 COPY . /app/
 
 # Download LatentSync-1.6 models
@@ -138,7 +137,6 @@ RUN echo "=== Model file sizes ===" && \
     ls -lh /app/faceID/recognition.onnx && \
     ls -lh /app/checkpoints/latentsync_unet.pt && \
     ls -lh /app/checkpoints/whisper/tiny.pt
-
 
 # Set environment variables
 ENV PYTHONPATH="/app"
