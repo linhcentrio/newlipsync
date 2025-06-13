@@ -83,60 +83,52 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl --force-reinstall && \
     rm -f /tmp/insightface-0.7.3-cp310-cp310-linux_x86_64.whl)
 
-# Verify InsightFace installation
-RUN python -c "import insightface; print(f'✅ InsightFace: {insightface.__version__}')"
-
-# Copy source code FIRST (để có đủ cấu trúc thư mục)
+# Copy source code
 COPY . /app/
 
-# Download LatentSync-1.6 models
-RUN echo "=== Downloading LatentSync-1.6 models ===" && \
+# Download LatentSync models (both 1.5 and 1.6)
+RUN echo "=== Downloading LatentSync models ===" && \
     mkdir -p /app/checkpoints/whisper && \
+    echo "📥 Downloading shared Whisper model..." && \
     huggingface-cli download ByteDance/LatentSync-1.6 whisper/tiny.pt --local-dir checkpoints && \
+    echo "📥 Downloading LatentSync-1.5 UNet..." && \
+    huggingface-cli download ByteDance/LatentSync-1.5 latentsync_unet.pt --local-dir checkpoints && \
+    mv /app/checkpoints/latentsync_unet.pt /app/checkpoints/latentsync15_unet.pt && \
+    echo "📥 Downloading LatentSync-1.6 UNet..." && \
     huggingface-cli download ByteDance/LatentSync-1.6 latentsync_unet.pt --local-dir checkpoints && \
-    echo "✅ LatentSync models downloaded"
+    mv /app/checkpoints/latentsync_unet.pt /app/checkpoints/latentsync16_unet.pt && \
+    echo "✅ Both LatentSync models downloaded"
 
-# Download GFPGAN model - trực tiếp vào đúng vị trí
-RUN echo "=== Downloading GFPGAN model ===" && \
+# Download enhancement models
+RUN echo "=== Downloading enhancement models ===" && \
     mkdir -p /app/enhancers/GFPGAN && \
     wget --no-check-certificate --timeout=60 --tries=3 \
     "https://huggingface.co/OwlMaster/AllFilesRope/resolve/main/GFPGANv1.4.onnx" \
     -O /app/enhancers/GFPGAN/GFPGANv1.4.onnx && \
     echo "✅ GFPGAN model downloaded"
 
-# Download RetinaFace model - trực tiếp vào đúng vị trí
-RUN echo "=== Downloading RetinaFace model ===" && \
+# Download face detection models
+RUN echo "=== Downloading face detection models ===" && \
     mkdir -p /app/utils && \
     wget --no-check-certificate --timeout=60 --tries=3 \
     "https://huggingface.co/OwlMaster/AllFilesRope/resolve/main/scrfd_2.5g_bnkps.onnx" \
     -O /app/utils/scrfd_2.5g_bnkps.onnx && \
-    echo "✅ RetinaFace model downloaded"
-
-# Download FaceRecognition model - trực tiếp vào đúng vị trí
-RUN echo "=== Downloading FaceRecognition model ===" && \
     mkdir -p /app/faceID && \
     wget --no-check-certificate --timeout=60 --tries=3 \
     "http://108.181.198.160:9000/aiclipdfl/recognition.onnx" \
     -O /app/faceID/recognition.onnx && \
-    echo "✅ FaceRecognition model downloaded"
+    echo "✅ Face detection models downloaded"
 
-# Verify tất cả model files exist
+# Verify all model files exist
 RUN echo "=== Verifying model files ===" && \
-    ls -la /app/configs/unet/ && \
-    test -f /app/configs/unet/stage2_512.yaml && echo "✅ Config stage2_512.yaml verified" && \
+    test -f /app/configs/unet/stage2.yaml && echo "✅ LatentSync-1.5 config verified" && \
+    test -f /app/configs/unet/stage2_512.yaml && echo "✅ LatentSync-1.6 config verified" && \
+    test -f /app/checkpoints/latentsync15_unet.pt && echo "✅ LatentSync-1.5 model verified" && \
+    test -f /app/checkpoints/latentsync16_unet.pt && echo "✅ LatentSync-1.6 model verified" && \
+    test -f /app/checkpoints/whisper/tiny.pt && echo "✅ Whisper model verified" && \
     test -f /app/enhancers/GFPGAN/GFPGANv1.4.onnx && echo "✅ GFPGAN model verified" && \
     test -f /app/utils/scrfd_2.5g_bnkps.onnx && echo "✅ RetinaFace model verified" && \
-    test -f /app/faceID/recognition.onnx && echo "✅ FaceRecognition model verified" && \
-    test -f /app/checkpoints/latentsync_unet.pt && echo "✅ LatentSync UNet verified" && \
-    test -f /app/checkpoints/whisper/tiny.pt && echo "✅ Whisper model verified"
-
-# Show file sizes for verification
-RUN echo "=== Model file sizes ===" && \
-    ls -lh /app/enhancers/GFPGAN/GFPGANv1.4.onnx && \
-    ls -lh /app/utils/scrfd_2.5g_bnkps.onnx && \
-    ls -lh /app/faceID/recognition.onnx && \
-    ls -lh /app/checkpoints/latentsync_unet.pt && \
-    ls -lh /app/checkpoints/whisper/tiny.pt
+    test -f /app/faceID/recognition.onnx && echo "✅ FaceRecognition model verified"
 
 # Set environment variables
 ENV PYTHONPATH="/app"
