@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 RunPod Serverless Handler for AI Video Processing with Face Enhancement
-Optimized version with selective face enhancement
+Support for LatentSync-1.5 and LatentSync-1.6 models
 """
 
 import runpod
@@ -44,9 +44,21 @@ except ImportError as e:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Configuration paths
-CONFIG_PATH = Path("/app/configs/unet/stage2_512.yaml")
-CHECKPOINT_PATH = Path("/app/checkpoints/latentsync_unet.pt")
+# Model configurations for different versions
+MODEL_CONFIGS = {
+    "1.5": {
+        "config_path": "/app/configs/unet/stage2.yaml",
+        "checkpoint_path": "/app/checkpoints/latentsync15_unet.pt",
+        "whisper_path": "/app/checkpoints/whisper/tiny.pt",
+        "default_guidance_scale": 2.0
+    },
+    "1.6": {
+        "config_path": "/app/configs/unet/stage2_512.yaml", 
+        "checkpoint_path": "/app/checkpoints/latentsync16_unet.pt",
+        "whisper_path": "/app/checkpoints/whisper/tiny.pt",
+        "default_guidance_scale": 1.5
+    }
+}
 
 # MinIO Configuration
 MINIO_ENDPOINT = "108.181.198.160:9000"
@@ -68,19 +80,28 @@ detector = None
 enhancer = None
 recognition = None
 config = None
+current_model_version = None
+
+def validate_model_version(version: str) -> str:
+    """Validate and normalize model version"""
+    if version in ["1.5", "v1.5", "15"]:
+        return "1.5"
+    elif version in ["1.6", "v1.6", "16"]:
+        return "1.6"
+    else:
+        logger.warning(f"Invalid model version '{version}', defaulting to 1.6")
+        return "1.6"
+
+def get_model_config(version: str) -> dict:
+    """Get configuration for specified model version"""
+    version = validate_model_version(version)
+    return MODEL_CONFIGS[version]
 
 def initialize_models():
     """Initialize all required models"""
-    global detector, enhancer, recognition, config
+    global detector, enhancer, recognition
     
     try:
-        # Load configuration
-        if not CONFIG_PATH.exists():
-            raise FileNotFoundError(f"Config file not found: {CONFIG_PATH}")
-        
-        config = OmegaConf.load(CONFIG_PATH)
-        logger.info(f"✅ Configuration loaded")
-        
         # Initialize face detector
         detector_path = "/app/utils/scrfd_2.5g_bnkps.onnx"
         if not os.path.exists(detector_path):
@@ -121,6 +142,27 @@ def initialize_models():
         logger.error(f"❌ Model initialization failed: {e}")
         raise e
 
+def load_latentsync_config(model_version: str):
+    """Load LatentSync configuration for specified version"""
+    global config, current_model_version
+    
+    try:
+        model_config = get_model_config(model_version)
+        config_path = Path(model_config["config_path"])
+        
+        if not config_path.exists():
+            raise FileNotFoundError(f"Config file not found: {config_path}")
+        
+        config = OmegaConf.load(config_path)
+        current_model_version = model_version
+        logger.info(f"✅ LatentSync-{model_version} configuration loaded from {config_path}")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to load LatentSync-{model_version} config: {e}")
+        return False
+
 def download_file(url: str, local_path: str) -> bool:
     """Download file from URL with progress tracking"""
     try:
@@ -160,8 +202,11 @@ def upload_to_minio(local_path: str, object_name: str) -> str:
         raise e
 
 def create_args(video_path: str, audio_path: str, output_path: str, 
-               inference_steps: int, guidance_scale: float, seed: int) -> argparse.Namespace:
+               inference_steps: int, guidance_scale: float, seed: int, 
+               model_version: str) -> argparse.Namespace:
     """Create arguments for AI inference"""
+    model_config = get_model_config(model_version)
+    
     parser = argparse.ArgumentParser()
     parser.add_argument("--unet_config_path", type=str, required=True)
     parser.add_argument("--inference_ckpt_path", type=str, required=True)
@@ -173,8 +218,8 @@ def create_args(video_path: str, audio_path: str, output_path: str,
     parser.add_argument("--seed", type=int, default=1247)
     
     return parser.parse_args([
-        "--unet_config_path", str(CONFIG_PATH.absolute()),
-        "--inference_ckpt_path", str(CHECKPOINT_PATH.absolute()),
+        "--unet_config_path", model_config["config_path"],
+        "--inference_ckpt_path", model_config["checkpoint_path"],
         "--video_path", video_path,
         "--audio_path", audio_path,
         "--video_out_path", output_path,
@@ -184,13 +229,23 @@ def create_args(video_path: str, audio_path: str, output_path: str,
     ])
 
 def run_lipsync_inference(video_path: str, audio_path: str, output_path: str,
-                         inference_steps: int = 20, guidance_scale: float = 1.5, 
-                         seed: int = 1247) -> bool:
-    """Run AI lipsync inference"""
+                         inference_steps: int, guidance_scale: float, 
+                         seed: int, model_version: str) -> bool:
+    """Run AI lipsync inference with specified model version"""
     global config
     
     try:
-        logger.info("🎯 Running AI lipsync inference...")
+        logger.info(f"🎯 Running LatentSync-{model_version} inference...")
+        
+        # Load config for the specified model version
+        if not load_latentsync_config(model_version):
+            return False
+        
+        # Verify checkpoint exists
+        model_config = get_model_config(model_version)
+        checkpoint_path = Path(model_config["checkpoint_path"])
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"LatentSync-{model_version} checkpoint not found: {checkpoint_path}")
         
         config["run"].update({
             "guidance_scale": guidance_scale,
@@ -198,19 +253,20 @@ def run_lipsync_inference(video_path: str, audio_path: str, output_path: str,
         })
         
         args = create_args(video_path, audio_path, output_path, 
-                          inference_steps, guidance_scale, seed)
+                          inference_steps, guidance_scale, seed, model_version)
         
         result = inference_main(config=config, args=args)
         
         if os.path.exists(output_path):
-            logger.info(f"✅ Lipsync inference completed successfully")
+            file_size = os.path.getsize(output_path) / (1024 * 1024)
+            logger.info(f"✅ LatentSync-{model_version} inference completed successfully ({file_size:.1f} MB)")
             return True
         else:
-            logger.error("❌ Lipsync inference failed - no output file")
+            logger.error(f"❌ LatentSync-{model_version} inference failed - no output file")
             return False
             
     except Exception as e:
-        logger.error(f"❌ Lipsync inference error: {e}")
+        logger.error(f"❌ LatentSync-{model_version} inference error: {e}")
         return False
 
 def process_batch(frame_buffer, enhancer, face_mask, out, frame_width, frame_height):
@@ -231,14 +287,9 @@ def process_batch(frame_buffer, enhancer, face_mask, out, frame_width, frame_hei
         out.write(final_frame)
 
 def enhance_video_with_gfpgan(input_video_path: str, output_path: str = None) -> tuple[bool, dict]:
-    """
-    Apply selective face enhancement to video
-    - Frames with faces: enhanced
-    - Frames without faces: kept original
-    """
+    """Apply selective face enhancement to video"""
     global detector, enhancer
     
-    # Statistics tracking
     stats = {
         "total_frames": 0,
         "frames_with_faces": 0,
@@ -250,12 +301,10 @@ def enhance_video_with_gfpgan(input_video_path: str, output_path: str = None) ->
     try:
         logger.info(f"✨ Starting selective face enhancement: {input_video_path}")
         
-        # Open video
         video_stream = cv2.VideoCapture(input_video_path)
         if not video_stream.isOpened():
             raise ValueError(f"Failed to open video file: {input_video_path}")
         
-        # Get video properties
         fps = video_stream.get(cv2.CAP_PROP_FPS)
         frame_width = int(video_stream.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_height = int(video_stream.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -266,10 +315,7 @@ def enhance_video_with_gfpgan(input_video_path: str, output_path: str = None) ->
         if output_path is None:
             output_path = os.path.splitext(input_video_path)[0] + '_enhanced_gfpgan.mp4'
         
-        # Create temporary video path
         temp_video_path = output_path.replace('.mp4', '_temp.mp4')
-        
-        # Create video writer
         out = cv2.VideoWriter(temp_video_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
         
         # Create face mask for blending
@@ -279,7 +325,6 @@ def enhance_video_with_gfpgan(input_video_path: str, output_path: str = None) ->
         face_mask = cv2.cvtColor(face_mask, cv2.COLOR_GRAY2RGB)
         face_mask = face_mask / 255
         
-        # Batch processing
         batch_size = 1
         frame_buffer = []
         
@@ -290,38 +335,29 @@ def enhance_video_with_gfpgan(input_video_path: str, output_path: str = None) ->
             if not ret:
                 break
             
-            # Detect faces in current frame
             bboxes, kpss = detector.detect(frame, input_size=(320, 320), det_thresh=0.3)
             
             if len(kpss) == 0:
-                # No face → Keep original frame
                 stats["frames_without_faces"] += 1
                 out.write(frame)
                 continue
             
-            # Face detected → Enhance with AI
             stats["frames_with_faces"] += 1
-            
-            # Get aligned face
             aligned_face, mat = get_cropped_head_256(frame, kpss[0], size=256, scale=1.0)
             frame_buffer.append((frame, aligned_face, mat))
             
-            # Process batch when full
             if len(frame_buffer) >= batch_size:
                 process_batch(frame_buffer, enhancer, face_mask, out, frame_width, frame_height)
                 stats["faces_enhanced"] += len(frame_buffer)
                 frame_buffer = []
         
-        # Process remaining frames
         if frame_buffer:
             process_batch(frame_buffer, enhancer, face_mask, out, frame_width, frame_height)
             stats["faces_enhanced"] += len(frame_buffer)
         
-        # Cleanup video streams
         video_stream.release()
         out.release()
         
-        # Update statistics
         if stats["frames_with_faces"] > 0:
             stats["enhancement_applied"] = True
             logger.info(f"✅ Face enhancement applied to {stats['frames_with_faces']}/{stats['total_frames']} frames")
@@ -332,20 +368,17 @@ def enhance_video_with_gfpgan(input_video_path: str, output_path: str = None) ->
         # Extract and combine audio
         audio_path = os.path.splitext(output_path)[0] + '.aac'
         
-        # Extract audio from original video
         subprocess.run([
             'ffmpeg', '-y', '-i', input_video_path, 
             '-vn', '-acodec', 'aac', '-b:a', '192k', audio_path
         ], check=True, capture_output=True)
         
-        # Combine enhanced video with audio
         subprocess.run([
             'ffmpeg', '-y', '-i', temp_video_path, '-i', audio_path, 
             '-c:v', 'libx264', '-crf', '23', '-preset', 'medium', 
             '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', output_path
         ], check=True, capture_output=True)
         
-        # Cleanup temporary files
         if os.path.exists(temp_video_path):
             os.remove(temp_video_path)
         if os.path.exists(audio_path):
@@ -358,7 +391,6 @@ def enhance_video_with_gfpgan(input_video_path: str, output_path: str = None) ->
         logger.error(f"❌ Face enhancement failed: {e}")
         return False, stats
     finally:
-        # Cleanup
         if 'video_stream' in locals():
             video_stream.release()
         if 'out' in locals():
@@ -368,14 +400,11 @@ def enhance_video_with_gfpgan(input_video_path: str, output_path: str = None) ->
             torch.cuda.empty_cache()
 
 def handler(job):
-    """
-    Main RunPod handler for AI video processing
-    """
+    """Main RunPod handler for AI video processing with model selection"""
     job_id = job.get("id", "unknown")
     start_time = time.time()
     
     try:
-        # Get input parameters
         job_input = job.get("input", {})
         video_url = job_input.get("video_url")
         audio_url = job_input.get("audio_url")
@@ -383,26 +412,29 @@ def handler(job):
         if not video_url or not audio_url:
             return {"error": "Missing video_url or audio_url"}
         
-        # Processing parameters
+        # Model selection parameter
+        model_version = validate_model_version(job_input.get("model_version", "1.6"))
+        model_config = get_model_config(model_version)
+        
+        # Processing parameters with model-specific defaults
         inference_steps = job_input.get("inference_steps", 20)
-        guidance_scale = job_input.get("guidance_scale", 1.5)
+        guidance_scale = job_input.get("guidance_scale", model_config["default_guidance_scale"])
         seed = job_input.get("seed", 1247)
         enable_enhancement = job_input.get("enable_enhancement", True)
         
-        logger.info(f"🚀 Job {job_id}: AI Video Processing")
+        logger.info(f"🚀 Job {job_id}: AI Video Processing with LatentSync-{model_version}")
         logger.info(f"📺 Video: {video_url}")
         logger.info(f"🎵 Audio: {audio_url}")
+        logger.info(f"🤖 Model: LatentSync-{model_version}")
         logger.info(f"⚙️ Parameters: steps={inference_steps}, scale={guidance_scale}, seed={seed}, enhance={enable_enhancement}")
         
-        # Create temp directory
         with tempfile.TemporaryDirectory() as temp_dir:
-            # File paths
             video_path = os.path.join(temp_dir, "input_video.mp4")
             audio_path = os.path.join(temp_dir, "input_audio.wav")
             
             current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-            lipsync_output_path = os.path.join(temp_dir, f"lipsync_{current_time}.mp4")
-            final_output_path = os.path.join(temp_dir, f"final_{current_time}.mp4")
+            lipsync_output_path = os.path.join(temp_dir, f"lipsync_{model_version}_{current_time}.mp4")
+            final_output_path = os.path.join(temp_dir, f"final_{model_version}_{current_time}.mp4")
             
             # Step 1: Download input files
             logger.info("📥 Step 1/4: Downloading input files...")
@@ -412,19 +444,19 @@ def handler(job):
             if not download_file(audio_url, audio_path):
                 return {"error": "Failed to download audio"}
             
-            # Step 2: Run AI lipsync
-            logger.info("🎯 Step 2/4: Running AI lipsync processing...")
+            # Step 2: Run AI lipsync with selected model
+            logger.info(f"🎯 Step 2/4: Running LatentSync-{model_version} processing...")
             if not run_lipsync_inference(video_path, audio_path, lipsync_output_path, 
-                                       inference_steps, guidance_scale, seed):
-                return {"error": "AI lipsync processing failed"}
+                                       inference_steps, guidance_scale, seed, model_version):
+                return {"error": f"LatentSync-{model_version} processing failed"}
             
-            # Check lipsync output exists
             if not os.path.exists(lipsync_output_path):
                 return {"error": "Lipsync output not generated"}
             
             # Step 3: Apply face enhancement if enabled
             enhancement_success = False
             face_enhancement_status = "disabled"
+            face_stats = {}
             
             if enable_enhancement:
                 logger.info("✨ Step 3/4: Applying face enhancement...")
@@ -454,13 +486,12 @@ def handler(job):
             
             # Step 4: Upload result
             logger.info("📤 Step 4/4: Uploading result...")
-            output_filename = f"ai_video_{job_id}_{uuid.uuid4().hex[:8]}.mp4"
+            output_filename = f"latentsync_{model_version}_{job_id}_{uuid.uuid4().hex[:8]}.mp4"
             output_url = upload_to_minio(final_output_path, output_filename)
             
-            # Calculate processing time
             processing_time = time.time() - start_time
             
-            # Prepare simplified response (security-focused)
+            # Prepare response
             response = {
                 "output_video_url": output_url,
                 "processing_time_seconds": round(processing_time, 2),
@@ -469,7 +500,7 @@ def handler(job):
             }
             
             # Add face stats only if enhancement was attempted
-            if enable_enhancement and face_stats["total_frames"] > 0:
+            if enable_enhancement and face_stats.get("total_frames", 0) > 0:
                 response["face_enhancement_stats"] = {
                     "total_frames": face_stats["total_frames"],
                     "frames_enhanced": face_stats["frames_with_faces"],
@@ -486,7 +517,6 @@ def handler(job):
             "processing_time_seconds": round(time.time() - start_time, 2)
         }
     finally:
-        # Memory cleanup
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -494,6 +524,7 @@ def handler(job):
 if __name__ == "__main__":
     logger.info("🚀 Starting AI Video Processing Serverless Worker...")
     logger.info(f"🗄️ Storage: {MINIO_ENDPOINT}/{MINIO_BUCKET}")
+    logger.info(f"🤖 Supported models: LatentSync-1.5, LatentSync-1.6")
     
     # Verify environment
     try:
@@ -505,6 +536,16 @@ if __name__ == "__main__":
             logger.info(f"💾 GPU Memory: {torch.cuda.get_device_properties(0).total_memory/1e9:.1f} GB")
     except Exception as e:
         logger.warning(f"⚠️ Environment check failed: {e}")
+    
+    # Verify model files exist
+    for version, config in MODEL_CONFIGS.items():
+        config_path = Path(config["config_path"])
+        checkpoint_path = Path(config["checkpoint_path"])
+        
+        if config_path.exists() and checkpoint_path.exists():
+            logger.info(f"✅ LatentSync-{version} files verified")
+        else:
+            logger.warning(f"⚠️ LatentSync-{version} files missing")
     
     # Initialize models
     try:
